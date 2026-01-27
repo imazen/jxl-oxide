@@ -1,8 +1,9 @@
 //! Inspect command implementation.
 
-use crate::annotator::{annotate_file, AnnotateOptions};
+use crate::annotator::{annotate_file, get_vardct_annotations, AnnotateOptions};
 use crate::output;
 use jxl_oxide::JxlImage;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Run the inspect command.
@@ -131,7 +132,70 @@ pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::erro
                 println!("  B QM scale: {}", frame_header.b_qm_scale);
             }
         }
+
+        // Check for additional frames
+        let total_frames = image.num_loaded_frames();
+        if total_frames > 1 {
+            println!();
+            println!("Total frames: {}", total_frames);
+        }
+
+        // Get VarDCT stats from all frames
+        let mut all_vardct_anns = Vec::new();
+        for frame_idx in 0..total_frames {
+            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                all_vardct_anns.extend(anns);
+            }
+        }
+        if !all_vardct_anns.is_empty() {
+            print_vardct_stats(&all_vardct_anns);
+        }
     }
 
     Ok(())
+}
+
+/// Print VarDCT statistics from annotations.
+fn print_vardct_stats(annotations: &[jxl_bitstream::annotate::HfMetadataAnnotation]) {
+    if annotations.is_empty() {
+        return;
+    }
+
+    let mut total_blocks = 0u32;
+    let mut dct_type_counts: HashMap<String, u32> = HashMap::new();
+    let mut hf_mul_sum = 0i64;
+    let mut hf_mul_min = i32::MAX;
+    let mut hf_mul_max = i32::MIN;
+
+    for ann in annotations {
+        total_blocks += ann.num_varblocks;
+        for block in &ann.varblocks {
+            *dct_type_counts.entry(block.dct_select.clone()).or_default() += 1;
+            hf_mul_sum += block.hf_mul as i64;
+            hf_mul_min = hf_mul_min.min(block.hf_mul);
+            hf_mul_max = hf_mul_max.max(block.hf_mul);
+        }
+    }
+
+    println!();
+    println!("VarDCT Statistics:");
+    println!("  Total varblocks: {}", total_blocks);
+
+    // Sort DCT types by count
+    let mut dct_types: Vec<_> = dct_type_counts.into_iter().collect();
+    dct_types.sort_by(|a, b| b.1.cmp(&a.1));
+
+    println!("  DCT transform types:");
+    for (dct_type, count) in dct_types.iter().take(8) {
+        let pct = (*count as f64 / total_blocks as f64) * 100.0;
+        println!("    {:15} {:6} ({:5.1}%)", dct_type, count, pct);
+    }
+    if dct_types.len() > 8 {
+        println!("    ... and {} more types", dct_types.len() - 8);
+    }
+
+    if total_blocks > 0 {
+        let hf_mul_avg = hf_mul_sum as f64 / total_blocks as f64;
+        println!("  HF multiplier: min={}, max={}, avg={:.1}", hf_mul_min, hf_mul_max, hf_mul_avg);
+    }
 }
