@@ -2,10 +2,12 @@
 
 use crate::annotator::{annotate_file, AnnotateOptions};
 use jxl_bitstream::annotate::{
-    Checkpoint, CheckpointDiff, CheckpointStats, HfMetadataAnnotation, VarBlockAnnotation,
+    Checkpoint, CheckpointDiff, CheckpointStats, HfMetadataAnnotation, Segment, VarBlockAnnotation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 /// Configuration for diff comparison.
@@ -761,4 +763,207 @@ fn compare_checkpoints(
     }
 
     diffs
+}
+
+/// A single byte-level difference between two files.
+#[derive(Debug)]
+struct ByteDiff {
+    /// Offset in the file where the difference occurs
+    offset: u64,
+    /// Byte value in file A (if offset is within file A)
+    byte_a: Option<u8>,
+    /// Byte value in file B (if offset is within file B)
+    byte_b: Option<u8>,
+}
+
+/// Run byte-level hex diff between two files.
+pub fn run_hex_diff(
+    file_a: &Path,
+    file_b: &Path,
+    max_diffs: usize,
+    context: usize,
+    with_segments: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    // Read both files
+    let mut f_a = File::open(file_a)?;
+    let mut f_b = File::open(file_b)?;
+
+    let mut bytes_a = Vec::new();
+    let mut bytes_b = Vec::new();
+
+    f_a.read_to_end(&mut bytes_a)?;
+    f_b.read_to_end(&mut bytes_b)?;
+
+    println!("File A: {} ({} bytes)", file_a.display(), bytes_a.len());
+    println!("File B: {} ({} bytes)", file_b.display(), bytes_b.len());
+
+    if bytes_a == bytes_b {
+        println!("\nFiles are identical.");
+        return Ok(());
+    }
+
+    // Optionally load segment info for context
+    let segments_a: Option<Vec<Segment>> = if with_segments {
+        let opts = AnnotateOptions::default();
+        annotate_file(file_a, &opts).ok().map(|r| r.segments)
+    } else {
+        None
+    };
+
+    let segments_b: Option<Vec<Segment>> = if with_segments {
+        let opts = AnnotateOptions::default();
+        annotate_file(file_b, &opts).ok().map(|r| r.segments)
+    } else {
+        None
+    };
+
+    // Find differences
+    let mut diffs = Vec::new();
+    let max_len = bytes_a.len().max(bytes_b.len());
+
+    for i in 0..max_len {
+        let a = bytes_a.get(i).copied();
+        let b = bytes_b.get(i).copied();
+
+        if a != b {
+            diffs.push(ByteDiff {
+                offset: i as u64,
+                byte_a: a,
+                byte_b: b,
+            });
+
+            if diffs.len() >= max_diffs {
+                break;
+            }
+        }
+    }
+
+    // Count total differences (if we hit the limit)
+    let total_diffs = if diffs.len() >= max_diffs {
+        // Count remaining differences
+        let mut count = diffs.len();
+        for i in (diffs.last().unwrap().offset as usize + 1)..max_len {
+            let a = bytes_a.get(i).copied();
+            let b = bytes_b.get(i).copied();
+            if a != b {
+                count += 1;
+            }
+        }
+        count
+    } else {
+        diffs.len()
+    };
+
+    println!(
+        "\nFound {} byte difference{}{}",
+        total_diffs,
+        if total_diffs == 1 { "" } else { "s" },
+        if total_diffs > max_diffs {
+            format!(" (showing first {})", max_diffs)
+        } else {
+            String::new()
+        }
+    );
+    println!();
+
+    // Print differences with context
+    for diff in &diffs {
+        let offset = diff.offset as usize;
+        let start = offset.saturating_sub(context);
+        let end_a = (offset + 1 + context).min(bytes_a.len());
+        let end_b = (offset + 1 + context).min(bytes_b.len());
+
+        // Header with offset and byte values
+        let byte_a_str = diff.byte_a.map_or("--".to_string(), |b| format!("{:02X}", b));
+        let byte_b_str = diff.byte_b.map_or("--".to_string(), |b| format!("{:02X}", b));
+        println!(
+            "Offset 0x{:08X} ({}): {} -> {}",
+            diff.offset, diff.offset, byte_a_str, byte_b_str
+        );
+
+        // Show segment context if available
+        if let Some(ref segs) = segments_a
+            && let Some(seg) = find_segment_at_offset(segs, diff.offset)
+        {
+            println!("  Segment A: {:?}", seg.kind);
+        }
+        if let Some(ref segs) = segments_b
+            && let Some(seg) = find_segment_at_offset(segs, diff.offset)
+        {
+            println!("  Segment B: {:?}", seg.kind);
+        }
+
+        // File A hex line
+        print!("  A: ");
+        print_hex_line(&bytes_a, start, end_a, offset);
+
+        // File B hex line
+        print!("  B: ");
+        print_hex_line(&bytes_b, start, end_b, offset);
+
+        // Show ASCII representation
+        print!("  A: ");
+        print_ascii_line(&bytes_a, start, end_a, offset);
+        print!("  B: ");
+        print_ascii_line(&bytes_b, start, end_b, offset);
+
+        println!();
+    }
+
+    // Summary
+    if bytes_a.len() != bytes_b.len() {
+        println!(
+            "Size difference: {} bytes ({} vs {})",
+            (bytes_a.len() as i64 - bytes_b.len() as i64).abs(),
+            bytes_a.len(),
+            bytes_b.len()
+        );
+    }
+
+    // Find first differing offset
+    let first_diff = diffs.first().map(|d| d.offset).unwrap_or(0);
+    println!("First difference at offset: 0x{:08X} ({})", first_diff, first_diff);
+
+    Ok(())
+}
+
+/// Find segment containing the given byte offset.
+fn find_segment_at_offset(segments: &[Segment], offset: u64) -> Option<&Segment> {
+    segments.iter().find(|s| offset >= s.byte_range.0 && offset < s.byte_range.1)
+}
+
+/// Print a hex line with highlighting for the diff position.
+fn print_hex_line(bytes: &[u8], start: usize, end: usize, diff_offset: usize) {
+    for i in start..end {
+        if i == diff_offset {
+            // Highlight the differing byte
+            print!("[{:02X}]", bytes.get(i).copied().unwrap_or(0));
+        } else {
+            print!(" {:02X} ", bytes.get(i).copied().unwrap_or(0));
+        }
+    }
+    // Pad if file B is shorter
+    for _ in end..(diff_offset + 1 + (end - start).saturating_sub(diff_offset - start + 1)) {
+        print!(" -- ");
+    }
+    println!();
+}
+
+/// Print an ASCII line with highlighting for the diff position.
+fn print_ascii_line(bytes: &[u8], start: usize, end: usize, diff_offset: usize) {
+    print!("|");
+    for i in start..end {
+        let b = bytes.get(i).copied().unwrap_or(0);
+        let c = if b.is_ascii_graphic() || b == b' ' {
+            b as char
+        } else {
+            '.'
+        };
+        if i == diff_offset {
+            print!("[{}]", c);
+        } else {
+            print!(" {} ", c);
+        }
+    }
+    println!("|");
 }

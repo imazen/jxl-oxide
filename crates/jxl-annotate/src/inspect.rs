@@ -245,11 +245,11 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
         // Get first VarDCT frame info (or first frame if none)
         let mut first_vardct_idx: Option<usize> = None;
         for frame_idx in 0..image.num_loaded_frames() {
-            if let Some(frame) = image.frame(frame_idx) {
-                if frame.header().encoding == jxl_frame::header::Encoding::VarDct {
-                    first_vardct_idx = Some(frame_idx);
-                    break;
-                }
+            if let Some(frame) = image.frame(frame_idx)
+                && frame.header().encoding == jxl_frame::header::Encoding::VarDct
+            {
+                first_vardct_idx = Some(frame_idx);
+                break;
             }
         }
 
@@ -632,10 +632,10 @@ pub fn run_block_map(
     // Find frame to display
     let frame_idx = frame_idx_opt.unwrap_or_else(|| {
         for idx in 0..image.num_loaded_frames() {
-            if let Some(frame) = image.frame(idx) {
-                if frame.header().encoding == jxl_frame::header::Encoding::VarDct {
-                    return idx;
-                }
+            if let Some(frame) = image.frame(idx)
+                && frame.header().encoding == jxl_frame::header::Encoding::VarDct
+            {
+                return idx;
             }
         }
         0
@@ -657,8 +657,8 @@ pub fn run_block_map(
     }
 
     // Determine image size in 8x8 blocks
-    let width_blocks = (fh.width + 7) / 8;
-    let height_blocks = (fh.height + 7) / 8;
+    let width_blocks = fh.width.div_ceil(8);
+    let height_blocks = fh.height.div_ceil(8);
 
     // Build a map of block positions to DCT types
     let mut block_map: HashMap<(u32, u32), char> = HashMap::new();
@@ -694,13 +694,13 @@ pub fn run_block_map(
 
     // Calculate scale factor to fit in max_width
     let scale = if width_blocks as usize > max_width {
-        (width_blocks as usize + max_width - 1) / max_width
+        (width_blocks as usize).div_ceil(max_width)
     } else {
         1
     };
 
-    let display_width = (width_blocks as usize + scale - 1) / scale;
-    let display_height = (height_blocks as usize + scale - 1) / scale;
+    let display_width = (width_blocks as usize).div_ceil(scale);
+    let display_height = (height_blocks as usize).div_ceil(scale);
 
     println!("Block Strategy Map for frame {} ({}x{} blocks, scale 1:{})",
              frame_idx, width_blocks, height_blocks, scale);

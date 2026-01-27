@@ -149,6 +149,27 @@ enum Commands {
         #[arg(short, long, default_value = "80")]
         width: usize,
     },
+
+    /// Compare two files at the byte level and show differences
+    HexDiff {
+        /// First file
+        file_a: PathBuf,
+
+        /// Second file
+        file_b: PathBuf,
+
+        /// Maximum number of differences to show (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        max_diffs: usize,
+
+        /// Context bytes to show around each difference
+        #[arg(short, long, default_value = "4")]
+        context: usize,
+
+        /// Show JXL segment context for each difference
+        #[arg(long)]
+        with_segments: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -237,6 +258,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             width,
         } => {
             inspect::run_block_map(&input, frame, width)?;
+        }
+
+        Commands::HexDiff {
+            file_a,
+            file_b,
+            max_diffs,
+            context,
+            with_segments,
+        } => {
+            diff::run_hex_diff(&file_a, &file_b, max_diffs, context, with_segments)?;
         }
     }
 
