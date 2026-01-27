@@ -9,6 +9,10 @@ license = "MIT OR Apache-2.0"
 version = "1.0.0"
 edition = "2024"
 
+[features]
+default = []
+annotate = ["jxl-bitstream/annotate"]
+
 [dependencies]
 
 [dependencies.jxl-bitstream]

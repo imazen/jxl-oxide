@@ -1,0 +1,31 @@
+[package]
+name = "jxl-annotate"
+description = "JXL bitstream annotation and analysis tool"
+authors = ["Wonwoo Choi <chwo9843@gmail.com>"]
+repository = "https://github.com/tirr-c/jxl-oxide.git"
+readme = "README.md"
+keywords = ["jpeg-xl", "decoder", "jxl-oxide", "debugging"]
+categories = ["multimedia::images", "development-tools"]
+license = "MIT OR Apache-2.0"
+
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "jxl-annotate"
+path = "src/main.rs"
+
+[dependencies]
+jxl-bitstream = { path = "../jxl-bitstream", features = ["annotate"] }
+jxl-oxide = { path = "../jxl-oxide" }
+jxl-image = { path = "../jxl-image" }
+jxl-frame = { path = "../jxl-frame" }
+jxl-vardct = { path = "../jxl-vardct" }
+
+clap = { version = "4.5", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sha2 = "0.10"
+hex = "0.4"

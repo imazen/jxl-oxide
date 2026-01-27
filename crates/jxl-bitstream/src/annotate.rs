@@ -489,6 +489,218 @@ pub struct AnsSymbolRecord {
     pub bit_offset: u64,
 }
 
+// ============================================================================
+// Decoded Value Checkpoints
+// ============================================================================
+// These types capture intermediate decode results for pipeline analysis,
+// enabling comparison of two decoders/encoders at each processing stage.
+
+/// Pipeline stage where a checkpoint was captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PipelineStage {
+    /// Raw coefficients from entropy decoding (integers)
+    RawCoefficients,
+    /// After dequantization (floats)
+    DequantizedCoefficients,
+    /// After IDCT transform (spatial domain)
+    IdctOutput,
+    /// After chroma-from-luma adjustment
+    ChromaFromLuma,
+    /// After XYB to linear RGB conversion
+    ColorTransform,
+    /// After upsampling (2x/4x/8x)
+    Upsampling,
+    /// After edge-preserving filter
+    EdgePreservingFilter,
+    /// After Gaborish filter
+    Gaborish,
+    /// Final rendered pixels
+    FinalPixels,
+    /// Modular channel output
+    ModularChannel,
+    /// LF image (DC + LF coefficients)
+    LfImage,
+}
+
+/// Statistics for a checkpoint's data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointStats {
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+    pub stddev: f64,
+    /// Number of non-zero values (useful for sparsity analysis)
+    pub nonzero_count: u64,
+    pub total_count: u64,
+}
+
+/// A checkpoint capturing decoded values at a pipeline stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Checkpoint {
+    /// Which pipeline stage
+    pub stage: PipelineStage,
+    /// Frame index
+    pub frame_idx: u32,
+    /// Group/block coordinates (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_idx: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_x: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_y: Option<u32>,
+    /// Channel (0=Y/R, 1=X/G, 2=B)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<u32>,
+    /// Data dimensions
+    pub width: u32,
+    pub height: u32,
+    /// Statistics (always included for quick comparison)
+    pub stats: CheckpointStats,
+    /// Path to external data file (for full array comparison)
+    /// Format: .npy (NumPy), .bin (raw f32), or .png (visualization)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_file: Option<PathBuf>,
+    /// Where in decoder this checkpoint was captured
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoder_location: Option<DecoderLocation>,
+}
+
+impl CheckpointStats {
+    /// Compute statistics from a slice of f32 values.
+    pub fn from_f32_slice(data: &[f32]) -> Self {
+        if data.is_empty() {
+            return Self {
+                min: 0.0,
+                max: 0.0,
+                mean: 0.0,
+                stddev: 0.0,
+                nonzero_count: 0,
+                total_count: 0,
+            };
+        }
+
+        let mut min = f64::MAX;
+        let mut max = f64::MIN;
+        let mut sum = 0.0f64;
+        let mut nonzero = 0u64;
+
+        for &v in data {
+            let v = v as f64;
+            min = min.min(v);
+            max = max.max(v);
+            sum += v;
+            if v != 0.0 {
+                nonzero += 1;
+            }
+        }
+
+        let count = data.len() as f64;
+        let mean = sum / count;
+
+        let variance = data.iter().map(|&v| {
+            let diff = v as f64 - mean;
+            diff * diff
+        }).sum::<f64>() / count;
+
+        Self {
+            min,
+            max,
+            mean,
+            stddev: variance.sqrt(),
+            nonzero_count: nonzero,
+            total_count: data.len() as u64,
+        }
+    }
+
+    /// Compute statistics from a slice of i32 values.
+    pub fn from_i32_slice(data: &[i32]) -> Self {
+        if data.is_empty() {
+            return Self {
+                min: 0.0,
+                max: 0.0,
+                mean: 0.0,
+                stddev: 0.0,
+                nonzero_count: 0,
+                total_count: 0,
+            };
+        }
+
+        let mut min = i32::MAX;
+        let mut max = i32::MIN;
+        let mut sum = 0i64;
+        let mut nonzero = 0u64;
+
+        for &v in data {
+            min = min.min(v);
+            max = max.max(v);
+            sum += v as i64;
+            if v != 0 {
+                nonzero += 1;
+            }
+        }
+
+        let count = data.len() as f64;
+        let mean = sum as f64 / count;
+
+        let variance = data.iter().map(|&v| {
+            let diff = v as f64 - mean;
+            diff * diff
+        }).sum::<f64>() / count;
+
+        Self {
+            min: min as f64,
+            max: max as f64,
+            mean,
+            stddev: variance.sqrt(),
+            nonzero_count: nonzero,
+            total_count: data.len() as u64,
+        }
+    }
+}
+
+/// Difference between two checkpoints at the same pipeline stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointDiff {
+    pub stage: PipelineStage,
+    pub frame_idx: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_idx: Option<u32>,
+    /// Statistics of the difference (a - b)
+    pub diff_stats: CheckpointStats,
+    /// Max absolute difference
+    pub max_abs_diff: f64,
+    /// Mean absolute difference
+    pub mean_abs_diff: f64,
+    /// Root mean square difference
+    pub rms_diff: f64,
+    /// Are values identical within tolerance?
+    pub identical: bool,
+    /// Tolerance used for comparison
+    pub tolerance: f64,
+}
+
+/// Collector for checkpoints during decoding.
+#[derive(Debug, Default)]
+pub struct CheckpointCollector {
+    pub checkpoints: Vec<Checkpoint>,
+}
+
+impl CheckpointCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Push a checkpoint with statistics only (no data export).
+    pub fn push_stats(&mut self, checkpoint: Checkpoint) {
+        self.checkpoints.push(checkpoint);
+    }
+
+    /// Get checkpoints for a specific stage.
+    pub fn get_by_stage(&self, stage: PipelineStage) -> Vec<&Checkpoint> {
+        self.checkpoints.iter().filter(|c| c.stage == stage).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
