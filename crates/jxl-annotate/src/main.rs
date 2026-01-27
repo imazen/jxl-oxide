@@ -84,6 +84,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Show per-frame VarDCT statistics (useful for animation analysis)
+        #[arg(long)]
+        per_frame: bool,
     },
 
     /// Extract a specific segment from annotations
@@ -148,8 +152,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             )?;
         }
 
-        Commands::Info { input, json } => {
-            inspect::run_info(&input, json)?;
+        Commands::Info { input, json, per_frame } => {
+            inspect::run_info(&input, json, per_frame)?;
         }
 
         Commands::Extract {

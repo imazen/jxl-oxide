@@ -39,18 +39,32 @@ pub fn run_inspect(
 }
 
 /// Run the info command.
-pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub fn run_info(input: &Path, json_output: bool, per_frame: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let data = std::fs::read(input)?;
     let image = JxlImage::builder().read(&*data)?;
     let header = image.image_header();
 
     if json_output {
-        // Collect frame info
+        // Collect frame info with optional per-frame VarDCT stats
         let mut frames_json = Vec::new();
+        let mut all_vardct_anns = Vec::new();
+
         for frame_idx in 0..image.num_loaded_frames() {
             if let Some(frame) = image.frame(frame_idx) {
                 let fh = frame.header();
-                frames_json.push(serde_json::json!({
+                let frame_anns = get_vardct_annotations(&image, frame_idx).ok();
+
+                let frame_vardct_stats = if per_frame {
+                    frame_anns.as_ref().map(|anns| compute_vardct_stats_json(anns))
+                } else {
+                    None
+                };
+
+                if let Some(anns) = frame_anns {
+                    all_vardct_anns.extend(anns);
+                }
+
+                let mut frame_json = serde_json::json!({
                     "index": frame_idx,
                     "encoding": if fh.encoding == jxl_frame::header::Encoding::VarDct { "VarDCT" } else { "Modular" },
                     "width": fh.width,
@@ -58,17 +72,17 @@ pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::erro
                     "passes": fh.passes.num_passes,
                     "lf_groups": fh.num_lf_groups(),
                     "groups": fh.num_groups(),
-                }));
+                });
+
+                if let Some(stats) = frame_vardct_stats {
+                    frame_json["vardct_stats"] = stats;
+                }
+
+                frames_json.push(frame_json);
             }
         }
 
-        // Collect VarDCT stats
-        let mut all_vardct_anns = Vec::new();
-        for frame_idx in 0..image.num_loaded_frames() {
-            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
-                all_vardct_anns.extend(anns);
-            }
-        }
+        // Aggregate VarDCT stats
         let vardct_stats = if !all_vardct_anns.is_empty() {
             Some(compute_vardct_stats_json(&all_vardct_anns))
         } else {
@@ -176,10 +190,21 @@ pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::erro
         let mut all_vardct_anns = Vec::new();
         for frame_idx in 0..total_frames {
             if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                if per_frame && !anns.is_empty() {
+                    println!();
+                    println!("Frame {} VarDCT Statistics:", frame_idx);
+                    print_vardct_stats_compact(&anns);
+                }
                 all_vardct_anns.extend(anns);
             }
         }
+
+        // Print overall stats
         if !all_vardct_anns.is_empty() {
+            if per_frame && total_frames > 1 {
+                println!();
+                println!("Overall VarDCT Statistics:");
+            }
             print_vardct_stats(&all_vardct_anns);
         }
     }
@@ -229,6 +254,52 @@ fn print_vardct_stats(annotations: &[jxl_bitstream::annotate::HfMetadataAnnotati
     if total_blocks > 0 {
         let hf_mul_avg = hf_mul_sum as f64 / total_blocks as f64;
         println!("  HF multiplier: min={}, max={}, avg={:.1}", hf_mul_min, hf_mul_max, hf_mul_avg);
+    }
+}
+
+/// Print compact VarDCT statistics (for per-frame output).
+fn print_vardct_stats_compact(annotations: &[jxl_bitstream::annotate::HfMetadataAnnotation]) {
+    if annotations.is_empty() {
+        return;
+    }
+
+    let mut total_blocks = 0u32;
+    let mut dct_type_counts: HashMap<String, u32> = HashMap::new();
+    let mut hf_mul_sum = 0i64;
+    let mut hf_mul_min = i32::MAX;
+    let mut hf_mul_max = i32::MIN;
+
+    for ann in annotations {
+        total_blocks += ann.num_varblocks;
+        for block in &ann.varblocks {
+            *dct_type_counts.entry(block.dct_select.clone()).or_default() += 1;
+            hf_mul_sum += block.hf_mul as i64;
+            hf_mul_min = hf_mul_min.min(block.hf_mul);
+            hf_mul_max = hf_mul_max.max(block.hf_mul);
+        }
+    }
+
+    // Sort DCT types by count
+    let mut dct_types: Vec<_> = dct_type_counts.into_iter().collect();
+    dct_types.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Compact output: blocks count, top 3 DCT types, HF mul range
+    let top_types: Vec<String> = dct_types
+        .iter()
+        .take(3)
+        .map(|(t, c)| format!("{} ({:.0}%)", t, (*c as f64 / total_blocks as f64) * 100.0))
+        .collect();
+
+    if total_blocks > 0 {
+        let hf_mul_avg = hf_mul_sum as f64 / total_blocks as f64;
+        println!(
+            "  Blocks: {}  Top types: {}  HF mul: {}-{} (avg {:.1})",
+            total_blocks,
+            top_types.join(", "),
+            hf_mul_min,
+            hf_mul_max,
+            hf_mul_avg
+        );
     }
 }
 
