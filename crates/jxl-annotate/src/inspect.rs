@@ -142,6 +142,17 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
                     "groups": fh.num_groups(),
                 });
 
+                // Add VarDCT-specific fields
+                if fh.encoding == jxl_frame::header::Encoding::VarDct {
+                    frame_json["x_qm_scale"] = serde_json::json!(fh.x_qm_scale);
+                    frame_json["b_qm_scale"] = serde_json::json!(fh.b_qm_scale);
+                    let epf_iters = match &fh.restoration_filter.epf {
+                        jxl_frame::filter::EdgePreservingFilter::Disabled => 0,
+                        jxl_frame::filter::EdgePreservingFilter::Enabled(params) => params.iters,
+                    };
+                    frame_json["epf_iters"] = serde_json::json!(epf_iters);
+                }
+
                 if let Some(stats) = frame_vardct_stats {
                     frame_json["vardct_stats"] = stats;
                 }
@@ -244,6 +255,11 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
             if frame_header.encoding == jxl_frame::header::Encoding::VarDct {
                 println!("  X QM scale: {}", frame_header.x_qm_scale);
                 println!("  B QM scale: {}", frame_header.b_qm_scale);
+                let epf_iters = match &frame_header.restoration_filter.epf {
+                    jxl_frame::filter::EdgePreservingFilter::Disabled => 0,
+                    jxl_frame::filter::EdgePreservingFilter::Enabled(params) => params.iters,
+                };
+                println!("  EPF iterations: {}", epf_iters);
             }
         }
 
