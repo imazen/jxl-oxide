@@ -728,6 +728,113 @@ pub fn run_block_map(
     Ok(())
 }
 
+/// Visualize HF multiplier (quantization) as ASCII heatmap.
+pub fn run_quant_map(
+    input: &Path,
+    frame_idx_opt: Option<usize>,
+    max_width: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let data = std::fs::read(input)?;
+    let image = JxlImage::builder().read(&*data)?;
+
+    // Find frame to display
+    let frame_idx = frame_idx_opt.unwrap_or_else(|| {
+        for idx in 0..image.num_loaded_frames() {
+            if let Some(frame) = image.frame(idx)
+                && frame.header().encoding == jxl_frame::header::Encoding::VarDct
+            {
+                return idx;
+            }
+        }
+        0
+    });
+
+    let Some(frame) = image.frame(frame_idx) else {
+        return Err(format!("Frame {} not found", frame_idx).into());
+    };
+
+    let fh = frame.header();
+    if fh.encoding != jxl_frame::header::Encoding::VarDct {
+        return Err(format!("Frame {} is Modular, not VarDCT", frame_idx).into());
+    }
+
+    // Get block annotations
+    let anns = get_vardct_annotations(&image, frame_idx)?;
+    if anns.is_empty() {
+        return Err("No VarDCT block annotations found".into());
+    }
+
+    // Determine image size in 8x8 blocks
+    let width_blocks = fh.width.div_ceil(8);
+    let height_blocks = fh.height.div_ceil(8);
+
+    // Build a map of block positions to HF multiplier values
+    let mut hf_map: HashMap<(u32, u32), i32> = HashMap::new();
+    let mut hf_min = i32::MAX;
+    let mut hf_max = i32::MIN;
+
+    for ann in &anns {
+        for block in &ann.varblocks {
+            let hf = block.hf_mul;
+            hf_min = hf_min.min(hf);
+            hf_max = hf_max.max(hf);
+
+            // Fill the block area
+            let (sw, sh) = block.size_blocks;
+            for dy in 0..sh {
+                for dx in 0..sw {
+                    hf_map.insert((block.block_x + dx, block.block_y + dy), hf);
+                }
+            }
+        }
+    }
+
+    // Calculate scale factor to fit in max_width
+    let scale = if width_blocks as usize > max_width {
+        (width_blocks as usize).div_ceil(max_width)
+    } else {
+        1
+    };
+
+    let display_width = (width_blocks as usize).div_ceil(scale);
+    let display_height = (height_blocks as usize).div_ceil(scale);
+
+    // Map HF values to characters (0-9, a-z for higher values)
+    let hf_to_char = |hf: i32| -> char {
+        if hf_max == hf_min {
+            return '5';
+        }
+        // Normalize to 0-35 range (0-9, a-z)
+        let normalized = ((hf - hf_min) as f64 / (hf_max - hf_min) as f64 * 35.0) as u8;
+        if normalized < 10 {
+            (b'0' + normalized) as char
+        } else {
+            (b'a' + normalized - 10) as char
+        }
+    };
+
+    println!("HF Multiplier Heatmap for frame {} ({}x{} blocks, scale 1:{})",
+             frame_idx, width_blocks, height_blocks, scale);
+    println!("HF range: {} - {} (0=low quant/high quality, 9/z=high quant/low quality)",
+             hf_min, hf_max);
+    println!();
+
+    // Print the map
+    for y in 0..display_height {
+        let mut line = String::new();
+        for x in 0..display_width {
+            // Sample the block at the center of this display cell
+            let bx = (x * scale + scale / 2) as u32;
+            let by = (y * scale + scale / 2) as u32;
+            let ch = hf_map.get(&(bx, by)).map(|&hf| hf_to_char(hf)).unwrap_or('.');
+            line.push(ch);
+        }
+        println!("{}", line);
+    }
+
+    Ok(())
+}
+
 /// Print section size breakdown.
 fn print_section_breakdown(input: &Path, total_size: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     use jxl_bitstream::annotate::SegmentKind;

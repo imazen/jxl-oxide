@@ -154,6 +154,20 @@ enum Commands {
         width: usize,
     },
 
+    /// Visualize HF multiplier (quantization) as ASCII heatmap
+    QuantMap {
+        /// Input JXL file
+        input: PathBuf,
+
+        /// Frame index (default: first VarDCT frame)
+        #[arg(short, long)]
+        frame: Option<usize>,
+
+        /// Maximum width in characters (default: 80)
+        #[arg(short, long, default_value = "80")]
+        width: usize,
+    },
+
     /// Compare two files at the byte level and show differences
     HexDiff {
         /// First file
@@ -262,6 +276,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             width,
         } => {
             inspect::run_block_map(&input, frame, width)?;
+        }
+
+        Commands::QuantMap {
+            input,
+            frame,
+            width,
+        } => {
+            inspect::run_quant_map(&input, frame, width)?;
         }
 
         Commands::HexDiff {
