@@ -1,8 +1,11 @@
 //! Diff command implementation for comparing two JXL files.
 
 use crate::annotator::{annotate_file, AnnotateOptions};
-use jxl_bitstream::annotate::{Checkpoint, CheckpointDiff, CheckpointStats};
+use jxl_bitstream::annotate::{
+    Checkpoint, CheckpointDiff, CheckpointStats, HfMetadataAnnotation, VarBlockAnnotation,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Configuration for diff comparison.
@@ -20,6 +23,7 @@ pub struct DiffResult {
     pub file_b: String,
     pub summary: DiffSummary,
     pub segment_diffs: Vec<SegmentDiff>,
+    pub vardct_diffs: Vec<VarDctLfGroupDiff>,
     pub checkpoint_diffs: Vec<CheckpointDiff>,
 }
 
@@ -50,6 +54,58 @@ pub enum SegmentDiffStatus {
     Different,
     OnlyInA,
     OnlyInB,
+}
+
+/// VarDCT diff for an LF group.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VarDctLfGroupDiff {
+    pub frame_idx: u32,
+    pub lf_group_idx: u32,
+    pub summary: VarDctDiffSummary,
+    /// Blocks that differ between the two files
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub differing_blocks: Vec<VarBlockDiff>,
+}
+
+/// Summary of VarDCT differences in an LF group.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VarDctDiffSummary {
+    pub total_blocks_a: u32,
+    pub total_blocks_b: u32,
+    pub matching_blocks: u32,
+    pub dct_type_differences: u32,
+    pub size_differences: u32,
+    pub hf_mul_differences: u32,
+    pub only_in_a: u32,
+    pub only_in_b: u32,
+}
+
+/// Difference for a single varblock.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VarBlockDiff {
+    pub block_x: u32,
+    pub block_y: u32,
+    pub diff_type: VarBlockDiffType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub a: Option<VarBlockAnnotation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub b: Option<VarBlockAnnotation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VarBlockDiffType {
+    /// Block exists only in file A
+    OnlyInA,
+    /// Block exists only in file B
+    OnlyInB,
+    /// DCT transform type differs
+    DctTypeDiff,
+    /// Block size differs
+    SizeDiff,
+    /// HF quantization multiplier differs
+    HfMulDiff,
+    /// Multiple differences
+    Multiple,
 }
 
 /// Run the diff command.
@@ -94,6 +150,32 @@ pub fn run_diff(
     println!("  Different segments: {}", diff.summary.different_segments);
     println!("  Missing in A: {}", diff.summary.missing_in_a);
     println!("  Missing in B: {}", diff.summary.missing_in_b);
+
+    // VarDCT summary
+    if !diff.vardct_diffs.is_empty() {
+        let total_dct_diffs: u32 = diff
+            .vardct_diffs
+            .iter()
+            .map(|d| d.summary.dct_type_differences)
+            .sum();
+        let total_size_diffs: u32 = diff
+            .vardct_diffs
+            .iter()
+            .map(|d| d.summary.size_differences)
+            .sum();
+        let total_hf_mul_diffs: u32 = diff
+            .vardct_diffs
+            .iter()
+            .map(|d| d.summary.hf_mul_differences)
+            .sum();
+
+        println!();
+        println!("VarDCT Block Differences:");
+        println!("  DCT type differences: {}", total_dct_diffs);
+        println!("  Size differences: {}", total_size_diffs);
+        println!("  HF multiplier differences: {}", total_hf_mul_diffs);
+    }
+
     println!();
     println!("Full diff written to: {}", output.display());
 
@@ -176,6 +258,12 @@ fn compare_annotations(
         }
     }
 
+    // Compare VarDCT block annotations
+    let vardct_diffs = compare_vardct_annotations(
+        &result_a.vardct_annotations,
+        &result_b.vardct_annotations,
+    );
+
     // Compare checkpoints
     let checkpoint_diffs = compare_checkpoints(
         &result_a.checkpoints,
@@ -183,8 +271,20 @@ fn compare_annotations(
         config.tolerance,
     );
 
+    // Count VarDCT differences for summary
+    let vardct_identical = vardct_diffs.iter().all(|d| {
+        d.summary.dct_type_differences == 0
+            && d.summary.size_differences == 0
+            && d.summary.hf_mul_differences == 0
+            && d.summary.only_in_a == 0
+            && d.summary.only_in_b == 0
+    });
+
     let summary = DiffSummary {
-        identical: different == 0 && missing_in_a == 0 && checkpoint_diffs.iter().all(|d| d.identical),
+        identical: different == 0
+            && missing_in_a == 0
+            && vardct_identical
+            && checkpoint_diffs.iter().all(|d| d.identical),
         total_segments_a: segments_a.len(),
         total_segments_b: segments_b.len(),
         matching_segments: matching,
@@ -198,8 +298,201 @@ fn compare_annotations(
         file_b: result_b.manifest.source_file.to_string_lossy().to_string(),
         summary,
         segment_diffs,
+        vardct_diffs,
         checkpoint_diffs,
     })
+}
+
+/// Compare VarDCT block annotations between two files.
+fn compare_vardct_annotations(
+    annotations_a: &[HfMetadataAnnotation],
+    annotations_b: &[HfMetadataAnnotation],
+) -> Vec<VarDctLfGroupDiff> {
+    let mut diffs = Vec::new();
+
+    // Build lookup maps by (frame_idx, lf_group_idx)
+    let map_a: HashMap<(u32, u32), &HfMetadataAnnotation> = annotations_a
+        .iter()
+        .map(|a| ((a.frame_idx, a.lf_group_idx), a))
+        .collect();
+
+    let map_b: HashMap<(u32, u32), &HfMetadataAnnotation> = annotations_b
+        .iter()
+        .map(|a| ((a.frame_idx, a.lf_group_idx), a))
+        .collect();
+
+    // Get all unique keys
+    let mut all_keys: Vec<_> = map_a.keys().chain(map_b.keys()).copied().collect();
+    all_keys.sort();
+    all_keys.dedup();
+
+    for (frame_idx, lf_group_idx) in all_keys {
+        let ann_a = map_a.get(&(frame_idx, lf_group_idx));
+        let ann_b = map_b.get(&(frame_idx, lf_group_idx));
+
+        match (ann_a, ann_b) {
+            (Some(a), Some(b)) => {
+                // Compare the varblocks
+                let lf_diff = compare_lf_group_varblocks(frame_idx, lf_group_idx, a, b);
+                diffs.push(lf_diff);
+            }
+            (Some(a), None) => {
+                // Only in A
+                diffs.push(VarDctLfGroupDiff {
+                    frame_idx,
+                    lf_group_idx,
+                    summary: VarDctDiffSummary {
+                        total_blocks_a: a.num_varblocks,
+                        total_blocks_b: 0,
+                        matching_blocks: 0,
+                        dct_type_differences: 0,
+                        size_differences: 0,
+                        hf_mul_differences: 0,
+                        only_in_a: a.num_varblocks,
+                        only_in_b: 0,
+                    },
+                    differing_blocks: Vec::new(),
+                });
+            }
+            (None, Some(b)) => {
+                // Only in B
+                diffs.push(VarDctLfGroupDiff {
+                    frame_idx,
+                    lf_group_idx,
+                    summary: VarDctDiffSummary {
+                        total_blocks_a: 0,
+                        total_blocks_b: b.num_varblocks,
+                        matching_blocks: 0,
+                        dct_type_differences: 0,
+                        size_differences: 0,
+                        hf_mul_differences: 0,
+                        only_in_a: 0,
+                        only_in_b: b.num_varblocks,
+                    },
+                    differing_blocks: Vec::new(),
+                });
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
+    diffs
+}
+
+/// Compare varblocks within an LF group.
+fn compare_lf_group_varblocks(
+    frame_idx: u32,
+    lf_group_idx: u32,
+    ann_a: &HfMetadataAnnotation,
+    ann_b: &HfMetadataAnnotation,
+) -> VarDctLfGroupDiff {
+    // Build lookup maps by (block_x, block_y)
+    let blocks_a: HashMap<(u32, u32), &VarBlockAnnotation> = ann_a
+        .varblocks
+        .iter()
+        .map(|b| ((b.block_x, b.block_y), b))
+        .collect();
+
+    let blocks_b: HashMap<(u32, u32), &VarBlockAnnotation> = ann_b
+        .varblocks
+        .iter()
+        .map(|b| ((b.block_x, b.block_y), b))
+        .collect();
+
+    let mut matching_blocks = 0u32;
+    let mut dct_type_differences = 0u32;
+    let mut size_differences = 0u32;
+    let mut hf_mul_differences = 0u32;
+    let mut only_in_a = 0u32;
+    let mut only_in_b = 0u32;
+    let mut differing_blocks = Vec::new();
+
+    // Check blocks in A
+    for (&(bx, by), block_a) in &blocks_a {
+        if let Some(block_b) = blocks_b.get(&(bx, by)) {
+            // Both files have a block at this position
+            let dct_diff = block_a.dct_select != block_b.dct_select;
+            let size_diff = block_a.size_blocks != block_b.size_blocks;
+            let hf_mul_diff = block_a.hf_mul != block_b.hf_mul;
+
+            if dct_diff || size_diff || hf_mul_diff {
+                let diff_type = if dct_diff && size_diff && hf_mul_diff {
+                    VarBlockDiffType::Multiple
+                } else if dct_diff && size_diff {
+                    VarBlockDiffType::Multiple
+                } else if dct_diff {
+                    VarBlockDiffType::DctTypeDiff
+                } else if size_diff {
+                    VarBlockDiffType::SizeDiff
+                } else {
+                    VarBlockDiffType::HfMulDiff
+                };
+
+                if dct_diff {
+                    dct_type_differences += 1;
+                }
+                if size_diff {
+                    size_differences += 1;
+                }
+                if hf_mul_diff {
+                    hf_mul_differences += 1;
+                }
+
+                differing_blocks.push(VarBlockDiff {
+                    block_x: bx,
+                    block_y: by,
+                    diff_type,
+                    a: Some((*block_a).clone()),
+                    b: Some((*block_b).clone()),
+                });
+            } else {
+                matching_blocks += 1;
+            }
+        } else {
+            // Only in A
+            only_in_a += 1;
+            differing_blocks.push(VarBlockDiff {
+                block_x: bx,
+                block_y: by,
+                diff_type: VarBlockDiffType::OnlyInA,
+                a: Some((*block_a).clone()),
+                b: None,
+            });
+        }
+    }
+
+    // Check blocks only in B
+    for (&(bx, by), block_b) in &blocks_b {
+        if !blocks_a.contains_key(&(bx, by)) {
+            only_in_b += 1;
+            differing_blocks.push(VarBlockDiff {
+                block_x: bx,
+                block_y: by,
+                diff_type: VarBlockDiffType::OnlyInB,
+                a: None,
+                b: Some((*block_b).clone()),
+            });
+        }
+    }
+
+    // Sort differing blocks by position for consistent output
+    differing_blocks.sort_by_key(|d| (d.block_y, d.block_x));
+
+    VarDctLfGroupDiff {
+        frame_idx,
+        lf_group_idx,
+        summary: VarDctDiffSummary {
+            total_blocks_a: ann_a.num_varblocks,
+            total_blocks_b: ann_b.num_varblocks,
+            matching_blocks,
+            dct_type_differences,
+            size_differences,
+            hf_mul_differences,
+            only_in_a,
+            only_in_b,
+        },
+        differing_blocks,
+    }
 }
 
 /// Compare checkpoints between two files.
