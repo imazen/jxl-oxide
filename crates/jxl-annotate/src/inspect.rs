@@ -522,3 +522,100 @@ pub fn run_hexdump(
 
     Ok(())
 }
+
+/// Export VarDCT stats to CSV.
+pub fn run_export_csv(
+    input: &Path,
+    output_path: &Path,
+    per_block: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let data = std::fs::read(input)?;
+    let image = JxlImage::builder().read(&*data)?;
+
+    let mut output = String::new();
+
+    if per_block {
+        // Export per-block data
+        output.push_str("frame_idx,lf_group_idx,block_x,block_y,dct_type,size_w,size_h,hf_mul\n");
+
+        for frame_idx in 0..image.num_loaded_frames() {
+            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                for ann in &anns {
+                    for block in &ann.varblocks {
+                        output.push_str(&format!(
+                            "{},{},{},{},{},{},{},{}\n",
+                            frame_idx,
+                            ann.lf_group_idx,
+                            block.block_x,
+                            block.block_y,
+                            block.dct_select,
+                            block.size_blocks.0,
+                            block.size_blocks.1,
+                            block.hf_mul
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        // Export summary stats per frame
+        output.push_str("frame_idx,encoding,total_blocks,");
+        output.push_str("dct8_pct,dct16_pct,dct32_pct,dct8x16_pct,dct16x8_pct,");
+        output.push_str("hf_mul_min,hf_mul_max,hf_mul_avg\n");
+
+        for frame_idx in 0..image.num_loaded_frames() {
+            let Some(frame) = image.frame(frame_idx) else { continue };
+            let fh = frame.header();
+            let encoding = if fh.encoding == jxl_frame::header::Encoding::VarDct {
+                "VarDCT"
+            } else {
+                "Modular"
+            };
+
+            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                if anns.is_empty() {
+                    output.push_str(&format!("{},{},0,0,0,0,0,0,0,0,0\n", frame_idx, encoding));
+                    continue;
+                }
+
+                let mut total = 0u32;
+                let mut dct_counts: HashMap<String, u32> = HashMap::new();
+                let mut hf_sum = 0i64;
+                let mut hf_min = i32::MAX;
+                let mut hf_max = i32::MIN;
+
+                for ann in &anns {
+                    total += ann.num_varblocks;
+                    for block in &ann.varblocks {
+                        *dct_counts.entry(block.dct_select.clone()).or_default() += 1;
+                        hf_sum += block.hf_mul as i64;
+                        hf_min = hf_min.min(block.hf_mul);
+                        hf_max = hf_max.max(block.hf_mul);
+                    }
+                }
+
+                let get_pct = |name: &str| -> f64 {
+                    if total == 0 { return 0.0; }
+                    (*dct_counts.get(name).unwrap_or(&0) as f64 / total as f64) * 100.0
+                };
+
+                let hf_avg = if total > 0 { hf_sum as f64 / total as f64 } else { 0.0 };
+
+                output.push_str(&format!(
+                    "{},{},{},{:.1},{:.1},{:.1},{:.1},{:.1},{},{},{:.2}\n",
+                    frame_idx, encoding, total,
+                    get_pct("Dct8"), get_pct("Dct16"), get_pct("Dct32"),
+                    get_pct("Dct8x16"), get_pct("Dct16x8"),
+                    hf_min, hf_max, hf_avg
+                ));
+            } else {
+                output.push_str(&format!("{},{},0,0,0,0,0,0,0,0,0\n", frame_idx, encoding));
+            }
+        }
+    }
+
+    std::fs::write(output_path, output)?;
+    println!("Exported to {}", output_path.display());
+
+    Ok(())
+}

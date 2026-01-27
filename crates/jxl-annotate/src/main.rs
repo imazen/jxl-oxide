@@ -121,6 +121,20 @@ enum Commands {
         #[arg(short, long, default_value = "0")]
         offset: usize,
     },
+
+    /// Export VarDCT block stats to CSV
+    ExportCsv {
+        /// Input JXL file
+        input: PathBuf,
+
+        /// Output CSV file
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Export per-block data (can be large)
+        #[arg(long)]
+        per_block: bool,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -193,6 +207,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             offset,
         } => {
             inspect::run_hexdump(&input, bytes, offset)?;
+        }
+
+        Commands::ExportCsv {
+            input,
+            output,
+            per_block,
+        } => {
+            inspect::run_export_csv(&input, &output, per_block)?;
         }
     }
 
