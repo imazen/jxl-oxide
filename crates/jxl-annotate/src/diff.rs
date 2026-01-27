@@ -637,9 +637,9 @@ fn compare_lf_group_varblocks(
             let hf_mul_diff = block_a.hf_mul != block_b.hf_mul;
 
             if dct_diff || size_diff || hf_mul_diff {
-                let diff_type = if dct_diff && size_diff && hf_mul_diff {
-                    VarBlockDiffType::Multiple
-                } else if dct_diff && size_diff {
+                // Count how many differences there are
+                let diff_count = dct_diff as u8 + size_diff as u8 + hf_mul_diff as u8;
+                let diff_type = if diff_count > 1 {
                     VarBlockDiffType::Multiple
                 } else if dct_diff {
                     VarBlockDiffType::DctTypeDiff

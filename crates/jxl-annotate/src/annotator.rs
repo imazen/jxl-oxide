@@ -12,6 +12,7 @@ use std::path::Path;
 
 /// Options for annotation.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Some fields are for planned features
 pub struct AnnotateOptions {
     pub include_ans: bool,
     pub include_checkpoints: bool,
