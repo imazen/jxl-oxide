@@ -39,10 +39,78 @@ pub fn run_inspect(
 }
 
 /// Run the info command.
-pub fn run_info(input: &Path, json_output: bool, per_frame: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let data = std::fs::read(input)?;
     let image = JxlImage::builder().read(&*data)?;
     let header = image.image_header();
+
+    // Summary mode: one-line output
+    if summary {
+        let num_frames = image.num_loaded_frames();
+        let encoding = if let Some(frame) = image.frame_by_keyframe(0) {
+            if frame.header().encoding == jxl_frame::header::Encoding::VarDct {
+                "VarDCT"
+            } else {
+                "Modular"
+            }
+        } else {
+            "?"
+        };
+
+        // Get VarDCT block count if applicable
+        let mut total_blocks = 0u32;
+        let mut top_dct = String::new();
+        for frame_idx in 0..num_frames {
+            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                for ann in &anns {
+                    total_blocks += ann.num_varblocks;
+                }
+            }
+        }
+        if total_blocks > 0 {
+            // Get top DCT type
+            let mut dct_counts: HashMap<String, u32> = HashMap::new();
+            for frame_idx in 0..num_frames {
+                if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                    for ann in &anns {
+                        for block in &ann.varblocks {
+                            *dct_counts.entry(block.dct_select.clone()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            if let Some((top, count)) = dct_counts.iter().max_by_key(|(_, c)| *c) {
+                let pct = (*count as f64 / total_blocks as f64) * 100.0;
+                top_dct = format!(" {}:{:.0}%", top, pct);
+            }
+        }
+
+        let anim_str = if header.metadata.animation.is_some() {
+            format!(" {}f", num_frames)
+        } else {
+            String::new()
+        };
+
+        let block_str = if total_blocks > 0 {
+            format!(" {}blk{}", total_blocks, top_dct)
+        } else {
+            String::new()
+        };
+
+        println!(
+            "{}: {}x{} {}bit {} {}{}{} {}B",
+            input.file_name().unwrap_or_default().to_string_lossy(),
+            header.size.width,
+            header.size.height,
+            header.metadata.bit_depth.bits_per_sample(),
+            if header.metadata.grayscale() { "gray" } else { "color" },
+            encoding,
+            anim_str,
+            block_str,
+            data.len()
+        );
+        return Ok(());
+    }
 
     if json_output {
         // Collect frame info with optional per-frame VarDCT stats
