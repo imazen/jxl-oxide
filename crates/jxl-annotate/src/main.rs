@@ -78,8 +78,9 @@ enum Commands {
 
     /// Show basic info about a JXL file (like jxlinfo but with more detail)
     Info {
-        /// Input JXL file
-        input: PathBuf,
+        /// Input JXL file(s) - accepts multiple files
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
 
         /// Output as JSON
         #[arg(long)]
@@ -171,7 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
         }
 
         Commands::Info { input, json, per_frame, summary } => {
-            inspect::run_info(&input, json, per_frame, summary)?;
+            for file in &input {
+                if let Err(e) = inspect::run_info(file, json, per_frame, summary) {
+                    eprintln!("Error processing {}: {}", file.display(), e);
+                }
+            }
         }
 
         Commands::Extract {
