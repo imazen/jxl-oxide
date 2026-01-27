@@ -9,11 +9,19 @@
 //!
 //! [`ContainerParser`] tries to parse the bytes fed into it, and emits various parser events
 //! including codestream data and auxiliary box data.
+//!
+//! # Annotation support
+//!
+//! With the `annotate` feature enabled, this crate provides types for recording byte-level
+//! annotations of the bitstream for debugging JXL encoders. See the [`annotate`] module.
 
 mod bitstream;
 pub mod consts;
 pub mod container;
 mod error;
+
+#[cfg(feature = "annotate")]
+pub mod annotate;
 
 pub use bitstream::{Bitstream, U, U32Specifier};
 pub use container::{BitstreamKind, ContainerParser, ParseEvent};
