@@ -19,7 +19,7 @@ pub(crate) fn transpose_lane(lanes: &mut [Lane]) {
 
 #[inline(always)]
 pub(crate) fn dct_2d_x86_64_sse2(io: &mut MutableSubgrid<'_>, direction: DctDirection) {
-    if io.width() % LANE_SIZE != 0 || io.height() % LANE_SIZE != 0 {
+    if !io.width().is_multiple_of(LANE_SIZE) || !io.height().is_multiple_of(LANE_SIZE) {
         return super::generic::dct_2d(io, direction);
     }
 

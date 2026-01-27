@@ -292,11 +292,11 @@ unsafe fn inverse_h_i16_x86_64_avx2(merged: &mut MutableSubgrid<'_, i16>) {
         }
 
         // Check if we have more data to process.
-        if (avg_width - 1) % 8 != 0 || width % 2 == 0 {
+        if !(avg_width - 1).is_multiple_of(8) || width.is_multiple_of(2) {
             let mut avgs = transpose_i16x8(std::array::from_fn(|idx| unsafe {
                 _mm_loadu_si128(rows[idx].add(avg_width - 8) as *const _)
             }));
-            if width % 2 == 0 {
+            if width.is_multiple_of(2) {
                 avgs = std::array::from_fn(|idx| if idx == 7 { avgs[7] } else { avgs[idx + 1] });
             }
             let residuals = transpose_i16x8(std::array::from_fn(|idx| unsafe {
@@ -346,7 +346,7 @@ unsafe fn inverse_h_i16_x86_64_avx2(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if height % 8 != 0 {
+    if !height.is_multiple_of(8) {
         inverse_h_i16_base(&mut merged.split_vertical(h8 * 8).1);
     }
 }
@@ -402,11 +402,11 @@ unsafe fn inverse_h_i16_x86_64_sse41(merged: &mut MutableSubgrid<'_, i16>) {
         }
 
         // Check if we have more data to process.
-        if (avg_width - 1) % 8 != 0 || width % 2 == 0 {
+        if !(avg_width - 1).is_multiple_of(8) || width.is_multiple_of(2) {
             let mut avgs = transpose_i16x8(std::array::from_fn(|idx| unsafe {
                 _mm_loadu_si128(rows[idx].add(avg_width - 8) as *const _)
             }));
-            if width % 2 == 0 {
+            if width.is_multiple_of(2) {
                 avgs = std::array::from_fn(|idx| if idx == 7 { avgs[7] } else { avgs[idx + 1] });
             }
             let residuals = transpose_i16x8(std::array::from_fn(|idx| unsafe {
@@ -456,7 +456,7 @@ unsafe fn inverse_h_i16_x86_64_sse41(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if height % 8 != 0 {
+    if !height.is_multiple_of(8) {
         inverse_h_i16_base(&mut merged.split_vertical(h8 * 8).1);
     }
 }
@@ -747,7 +747,7 @@ unsafe fn inverse_h_i16_wasm32_simd128(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if height % 8 != 0 {
+    if !height.is_multiple_of(8) {
         inverse_h_i16_base(&mut merged.split_vertical(h8 * 8).1);
     }
 }
@@ -919,7 +919,7 @@ unsafe fn inverse_v_i16_x86_64_avx2(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if width % 16 != 0 {
+    if !width.is_multiple_of(16) {
         inverse_v_i16_x86_64_sse41(&mut merged.split_horizontal(w16 * 16).1);
     }
 }
@@ -979,7 +979,7 @@ unsafe fn inverse_v_i16_x86_64_sse41(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if width % 8 != 0 {
+    if !width.is_multiple_of(8) {
         inverse_v_i16_base(&mut merged.split_horizontal(w8 * 8).1);
     }
 }
@@ -1096,7 +1096,7 @@ unsafe fn inverse_v_i16_wasm32_simd128(merged: &mut MutableSubgrid<'_, i16>) {
         }
     }
 
-    if width % 8 != 0 {
+    if !width.is_multiple_of(8) {
         inverse_v_i16_base(&mut merged.split_horizontal(w8 * 8).1);
     }
 }
