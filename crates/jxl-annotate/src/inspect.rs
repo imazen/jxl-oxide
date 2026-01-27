@@ -39,7 +39,7 @@ pub fn run_inspect(
 }
 
 /// Run the info command.
-pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool, breakdown: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     let data = std::fs::read(input)?;
     let image = JxlImage::builder().read(&*data)?;
     let header = image.image_header();
@@ -318,6 +318,11 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
                 println!("Overall VarDCT Statistics:");
             }
             print_vardct_stats(&all_vardct_anns);
+        }
+
+        // Section size breakdown
+        if breakdown {
+            print_section_breakdown(input, data.len())?;
         }
     }
 
@@ -719,6 +724,67 @@ pub fn run_block_map(
         }
         println!("{}", line);
     }
+
+    Ok(())
+}
+
+/// Print section size breakdown.
+fn print_section_breakdown(input: &Path, total_size: usize) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    use jxl_bitstream::annotate::SegmentKind;
+
+    let options = AnnotateOptions::default();
+    let result = annotate_file(input, &options)?;
+
+    // Group segments by category
+    let mut categories: HashMap<&str, u64> = HashMap::new();
+
+    for segment in &result.segments {
+        let size = segment.byte_range.1.saturating_sub(segment.byte_range.0);
+        let category = match &segment.kind {
+            SegmentKind::Container { .. } => "Container",
+            SegmentKind::Signature => "Signature",
+            SegmentKind::ImageHeader => "ImageHeader",
+            SegmentKind::FrameHeader { .. } => "FrameHeaders",
+            SegmentKind::Toc { .. } => "TOC",
+            SegmentKind::LfGlobal { .. } => "LfGlobal",
+            SegmentKind::LfCoeff { .. } => "LfCoeff",
+            SegmentKind::HfGlobal { .. } => "HfGlobal",
+            SegmentKind::HfMetadata { .. } => "HfMetadata",
+            SegmentKind::HfCoeff { .. } => "HfCoeff",
+            SegmentKind::ModularGlobal { .. } => "ModularGlobal",
+            SegmentKind::ModularGroup { .. } => "ModularGroup",
+        };
+        *categories.entry(category).or_default() += size;
+    }
+
+    // Calculate unaccounted or overlapping bytes
+    let accounted: u64 = categories.values().sum();
+
+    println!();
+    println!("Section Size Breakdown:");
+    println!("  {:15} {:>10} {:>7}", "Section", "Bytes", "Pct");
+    println!("  {:15} {:>10} {:>7}", "-------", "-----", "---");
+
+    // Sort by size descending
+    let mut sorted_cats: Vec<_> = categories.into_iter().collect();
+    sorted_cats.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (category, size) in &sorted_cats {
+        let pct = (*size as f64 / total_size as f64) * 100.0;
+        println!("  {:15} {:>10} {:>6.1}%", category, size, pct);
+    }
+
+    if accounted < total_size as u64 {
+        let unaccounted = total_size as u64 - accounted;
+        let pct = (unaccounted as f64 / total_size as f64) * 100.0;
+        println!("  {:15} {:>10} {:>6.1}%", "(unaccounted)", unaccounted, pct);
+    } else if accounted > total_size as u64 {
+        let overlap = accounted - total_size as u64;
+        let pct = (overlap as f64 / total_size as f64) * 100.0;
+        println!("  {:15} {:>10} {:>6.1}%", "(overlapping)", overlap, pct);
+    }
+
+    println!("  {:15} {:>10} {:>6.1}%", "TOTAL", total_size, 100.0);
 
     Ok(())
 }

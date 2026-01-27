@@ -93,6 +93,10 @@ enum Commands {
         /// Show one-line summary (useful for scripting)
         #[arg(long, short)]
         summary: bool,
+
+        /// Show section size breakdown (percentage of file per segment type)
+        #[arg(long, short = 'b')]
+        breakdown: bool,
     },
 
     /// Extract a specific segment from annotations
@@ -220,9 +224,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             )?;
         }
 
-        Commands::Info { input, json, per_frame, summary } => {
+        Commands::Info { input, json, per_frame, summary, breakdown } => {
             for file in &input {
-                if let Err(e) = inspect::run_info(file, json, per_frame, summary) {
+                if let Err(e) = inspect::run_info(file, json, per_frame, summary, breakdown) {
                     eprintln!("Error processing {}: {}", file.display(), e);
                 }
             }
