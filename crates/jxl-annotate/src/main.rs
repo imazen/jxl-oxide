@@ -135,6 +135,20 @@ enum Commands {
         #[arg(long)]
         per_block: bool,
     },
+
+    /// Visualize block strategy map as ASCII art
+    BlockMap {
+        /// Input JXL file
+        input: PathBuf,
+
+        /// Frame index (default: first VarDCT frame)
+        #[arg(short, long)]
+        frame: Option<usize>,
+
+        /// Maximum width in characters (default: 80)
+        #[arg(short, long, default_value = "80")]
+        width: usize,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -215,6 +229,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             per_block,
         } => {
             inspect::run_export_csv(&input, &output, per_block)?;
+        }
+
+        Commands::BlockMap {
+            input,
+            frame,
+            width,
+        } => {
+            inspect::run_block_map(&input, frame, width)?;
         }
     }
 

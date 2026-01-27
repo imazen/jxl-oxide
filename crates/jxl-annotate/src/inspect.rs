@@ -619,3 +619,106 @@ pub fn run_export_csv(
 
     Ok(())
 }
+
+/// Visualize block strategy map as ASCII art.
+pub fn run_block_map(
+    input: &Path,
+    frame_idx_opt: Option<usize>,
+    max_width: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let data = std::fs::read(input)?;
+    let image = JxlImage::builder().read(&*data)?;
+
+    // Find frame to display
+    let frame_idx = frame_idx_opt.unwrap_or_else(|| {
+        for idx in 0..image.num_loaded_frames() {
+            if let Some(frame) = image.frame(idx) {
+                if frame.header().encoding == jxl_frame::header::Encoding::VarDct {
+                    return idx;
+                }
+            }
+        }
+        0
+    });
+
+    let Some(frame) = image.frame(frame_idx) else {
+        return Err(format!("Frame {} not found", frame_idx).into());
+    };
+
+    let fh = frame.header();
+    if fh.encoding != jxl_frame::header::Encoding::VarDct {
+        return Err(format!("Frame {} is Modular, not VarDCT", frame_idx).into());
+    }
+
+    // Get block annotations
+    let anns = get_vardct_annotations(&image, frame_idx)?;
+    if anns.is_empty() {
+        return Err("No VarDCT block annotations found".into());
+    }
+
+    // Determine image size in 8x8 blocks
+    let width_blocks = (fh.width + 7) / 8;
+    let height_blocks = (fh.height + 7) / 8;
+
+    // Build a map of block positions to DCT types
+    let mut block_map: HashMap<(u32, u32), char> = HashMap::new();
+    for ann in &anns {
+        for block in &ann.varblocks {
+            // Map DCT type to a character
+            let ch = match block.dct_select.as_str() {
+                "Dct8" => '8',
+                "Dct16" => 'G', // 16 in hex
+                "Dct32" => 'T', // 32 = Thirty-two
+                "Dct64" => 'S', // 64 = Sixty-four
+                "Dct8x16" | "Dct16x8" => 'R', // Rectangle
+                "Dct8x32" | "Dct32x8" => 'r',
+                "Dct16x32" | "Dct32x16" => 'W', // Wide
+                "Dct32x64" | "Dct64x32" => 'w',
+                "Dct4x8" | "Dct8x4" => 's', // small
+                "Afv0" | "Afv1" | "Afv2" | "Afv3" => 'A', // AFV
+                "Hornuss" => 'H',
+                "Dct4" => '4',
+                "Dct2x2" => '2',
+                _ => '?',
+            };
+
+            // Fill the block area
+            let (sw, sh) = block.size_blocks;
+            for dy in 0..sh {
+                for dx in 0..sw {
+                    block_map.insert((block.block_x + dx, block.block_y + dy), ch);
+                }
+            }
+        }
+    }
+
+    // Calculate scale factor to fit in max_width
+    let scale = if width_blocks as usize > max_width {
+        (width_blocks as usize + max_width - 1) / max_width
+    } else {
+        1
+    };
+
+    let display_width = (width_blocks as usize + scale - 1) / scale;
+    let display_height = (height_blocks as usize + scale - 1) / scale;
+
+    println!("Block Strategy Map for frame {} ({}x{} blocks, scale 1:{})",
+             frame_idx, width_blocks, height_blocks, scale);
+    println!("Legend: 8=Dct8 G=Dct16 T=Dct32 S=Dct64 R=8x16/16x8 W=16x32/32x16 A=AFV s=small");
+    println!();
+
+    // Print the map
+    for y in 0..display_height {
+        let mut line = String::new();
+        for x in 0..display_width {
+            // Sample the block at the center of this display cell
+            let bx = (x * scale + scale / 2) as u32;
+            let by = (y * scale + scale / 2) as u32;
+            let ch = block_map.get(&(bx, by)).copied().unwrap_or('.');
+            line.push(ch);
+        }
+        println!("{}", line);
+    }
+
+    Ok(())
+}
