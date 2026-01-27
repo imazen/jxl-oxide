@@ -354,3 +354,59 @@ fn compute_vardct_stats_json(
         },
     })
 }
+
+/// Run the hexdump command.
+pub fn run_hexdump(
+    input: &Path,
+    bytes_limit: Option<usize>,
+    offset: usize,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let data = std::fs::read(input)?;
+
+    // Calculate the range to display
+    let start = offset.min(data.len());
+    let end = match bytes_limit {
+        Some(limit) => (start + limit).min(data.len()),
+        None => data.len(),
+    };
+    let slice = &data[start..end];
+
+    // Get basic annotations for the file
+    let options = AnnotateOptions::default();
+    let annotations = match annotate_file(input, &options) {
+        Ok(result) => {
+            // Flatten all annotations from all segments
+            result
+                .segments
+                .iter()
+                .flat_map(|s| s.annotations.iter().cloned())
+                .collect::<Vec<_>>()
+        }
+        Err(_) => Vec::new(),
+    };
+
+    // Filter annotations to the visible range
+    let visible_annotations: Vec<_> = annotations
+        .iter()
+        .filter(|ann| {
+            let ann_start = (ann.bit_start / 8) as usize;
+            let ann_end = ((ann.bit_start + ann.bit_length as u64).div_ceil(8)) as usize;
+            ann_start < end && ann_end > start
+        })
+        .cloned()
+        .collect();
+
+    // Print header
+    println!("File: {}", input.display());
+    println!("Size: {} bytes", data.len());
+    if offset > 0 || bytes_limit.is_some() {
+        println!("Showing bytes {}-{}", start, end);
+    }
+    println!();
+
+    // Print hex dump with annotations
+    let hex_output = output::format_hex_annotated(slice, &visible_annotations);
+    print!("{}", hex_output);
+
+    Ok(())
+}

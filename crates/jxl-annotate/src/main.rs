@@ -102,6 +102,20 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
+
+    /// Show hex dump of a JXL file with basic annotations
+    Hexdump {
+        /// Input JXL file
+        input: PathBuf,
+
+        /// Number of bytes to show (default: all)
+        #[arg(short, long)]
+        bytes: Option<usize>,
+
+        /// Start offset in bytes
+        #[arg(short, long, default_value = "0")]
+        offset: usize,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -162,6 +176,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
             output,
         } => {
             output::extract_segment(&input, &segment, &output)?;
+        }
+
+        Commands::Hexdump {
+            input,
+            bytes,
+            offset,
+        } => {
+            inspect::run_hexdump(&input, bytes, offset)?;
         }
     }
 
