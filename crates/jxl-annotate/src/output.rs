@@ -200,7 +200,7 @@ pub fn format_hex_annotated(
         std::collections::HashMap::new();
     for ann in annotations {
         let start_byte = (ann.bit_start / 8) as usize;
-        let end_byte = ((ann.bit_start + ann.bit_length as u64 + 7) / 8) as usize;
+        let end_byte = (ann.bit_start + ann.bit_length as u64).div_ceil(8) as usize;
         for b in start_byte..end_byte {
             byte_annotations.entry(b).or_default().push(ann);
         }

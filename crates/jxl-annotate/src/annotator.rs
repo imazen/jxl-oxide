@@ -277,66 +277,74 @@ fn create_segments_with_toc(
 
 /// Create annotations for the image header.
 fn create_image_header_annotations(header: &jxl_image::ImageHeader) -> Vec<Annotation> {
-    let mut annotations = Vec::new();
-
-    // Size info
-    annotations.push(Annotation {
-        bit_start: 16, // After signature
-        bit_length: 0, // Variable
-        path: "ImageHeader.size".to_string(),
-        field_name: "width".to_string(),
-        value: jxl_bitstream::annotate::AnnotatedValue::U32(header.size.width),
-        encoding: jxl_bitstream::annotate::EncodingType::U32 { selector: 0, extra_bits: 0 },
-        spec_ref: Some("ISO 18181-1:2022 A.4.2".to_string()),
-        decoder_location: None,
-    });
-
-    annotations.push(Annotation {
-        bit_start: 0,
-        bit_length: 0,
-        path: "ImageHeader.size".to_string(),
-        field_name: "height".to_string(),
-        value: jxl_bitstream::annotate::AnnotatedValue::U32(header.size.height),
-        encoding: jxl_bitstream::annotate::EncodingType::U32 { selector: 0, extra_bits: 0 },
-        spec_ref: Some("ISO 18181-1:2022 A.4.2".to_string()),
-        decoder_location: None,
-    });
-
-    // Metadata
-    annotations.push(Annotation {
-        bit_start: 0,
-        bit_length: 0,
-        path: "ImageHeader.metadata".to_string(),
-        field_name: "xyb_encoded".to_string(),
-        value: jxl_bitstream::annotate::AnnotatedValue::Bool(header.metadata.xyb_encoded),
-        encoding: jxl_bitstream::annotate::EncodingType::Bool,
-        spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
-        decoder_location: None,
-    });
-
-    annotations.push(Annotation {
-        bit_start: 0,
-        bit_length: 0,
-        path: "ImageHeader.metadata".to_string(),
-        field_name: "orientation".to_string(),
-        value: jxl_bitstream::annotate::AnnotatedValue::U32(header.metadata.orientation),
-        encoding: jxl_bitstream::annotate::EncodingType::U32 { selector: 0, extra_bits: 0 },
-        spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
-        decoder_location: None,
-    });
-
-    annotations.push(Annotation {
-        bit_start: 0,
-        bit_length: 0,
-        path: "ImageHeader.metadata".to_string(),
-        field_name: "num_extra_channels".to_string(),
-        value: jxl_bitstream::annotate::AnnotatedValue::U32(header.metadata.ec_info.len() as u32),
-        encoding: jxl_bitstream::annotate::EncodingType::U32 { selector: 0, extra_bits: 0 },
-        spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
-        decoder_location: None,
-    });
-
-    annotations
+    vec![
+        // Size info
+        Annotation {
+            bit_start: 16, // After signature
+            bit_length: 0, // Variable
+            path: "ImageHeader.size".to_string(),
+            field_name: "width".to_string(),
+            value: jxl_bitstream::annotate::AnnotatedValue::U32(header.size.width),
+            encoding: jxl_bitstream::annotate::EncodingType::U32 {
+                selector: 0,
+                extra_bits: 0,
+            },
+            spec_ref: Some("ISO 18181-1:2022 A.4.2".to_string()),
+            decoder_location: None,
+        },
+        Annotation {
+            bit_start: 0,
+            bit_length: 0,
+            path: "ImageHeader.size".to_string(),
+            field_name: "height".to_string(),
+            value: jxl_bitstream::annotate::AnnotatedValue::U32(header.size.height),
+            encoding: jxl_bitstream::annotate::EncodingType::U32 {
+                selector: 0,
+                extra_bits: 0,
+            },
+            spec_ref: Some("ISO 18181-1:2022 A.4.2".to_string()),
+            decoder_location: None,
+        },
+        // Metadata
+        Annotation {
+            bit_start: 0,
+            bit_length: 0,
+            path: "ImageHeader.metadata".to_string(),
+            field_name: "xyb_encoded".to_string(),
+            value: jxl_bitstream::annotate::AnnotatedValue::Bool(header.metadata.xyb_encoded),
+            encoding: jxl_bitstream::annotate::EncodingType::Bool,
+            spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
+            decoder_location: None,
+        },
+        Annotation {
+            bit_start: 0,
+            bit_length: 0,
+            path: "ImageHeader.metadata".to_string(),
+            field_name: "orientation".to_string(),
+            value: jxl_bitstream::annotate::AnnotatedValue::U32(header.metadata.orientation),
+            encoding: jxl_bitstream::annotate::EncodingType::U32 {
+                selector: 0,
+                extra_bits: 0,
+            },
+            spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
+            decoder_location: None,
+        },
+        Annotation {
+            bit_start: 0,
+            bit_length: 0,
+            path: "ImageHeader.metadata".to_string(),
+            field_name: "num_extra_channels".to_string(),
+            value: jxl_bitstream::annotate::AnnotatedValue::U32(
+                header.metadata.ec_info.len() as u32
+            ),
+            encoding: jxl_bitstream::annotate::EncodingType::U32 {
+                selector: 0,
+                extra_bits: 0,
+            },
+            spec_ref: Some("ISO 18181-1:2022 A.4.3".to_string()),
+            decoder_location: None,
+        },
+    ]
 }
 
 /// Create annotations for a frame header.

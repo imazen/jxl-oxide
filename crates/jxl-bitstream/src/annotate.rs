@@ -247,7 +247,7 @@ impl AnnotationCollector {
     pub fn end_segment(&mut self, end_bit: u64) {
         if let Some(mut segment) = self.current_segment.take() {
             segment.bit_range.1 = end_bit;
-            segment.byte_range.1 = (end_bit + 7) / 8;
+            segment.byte_range.1 = end_bit.div_ceil(8);
 
             if let Some(mut parent) = self.segment_stack.pop() {
                 parent.children.push(segment);
