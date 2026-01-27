@@ -45,6 +45,36 @@ pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::erro
     let header = image.image_header();
 
     if json_output {
+        // Collect frame info
+        let mut frames_json = Vec::new();
+        for frame_idx in 0..image.num_loaded_frames() {
+            if let Some(frame) = image.frame(frame_idx) {
+                let fh = frame.header();
+                frames_json.push(serde_json::json!({
+                    "index": frame_idx,
+                    "encoding": if fh.encoding == jxl_frame::header::Encoding::VarDct { "VarDCT" } else { "Modular" },
+                    "width": fh.width,
+                    "height": fh.height,
+                    "passes": fh.passes.num_passes,
+                    "lf_groups": fh.num_lf_groups(),
+                    "groups": fh.num_groups(),
+                }));
+            }
+        }
+
+        // Collect VarDCT stats
+        let mut all_vardct_anns = Vec::new();
+        for frame_idx in 0..image.num_loaded_frames() {
+            if let Ok(anns) = get_vardct_annotations(&image, frame_idx) {
+                all_vardct_anns.extend(anns);
+            }
+        }
+        let vardct_stats = if !all_vardct_anns.is_empty() {
+            Some(compute_vardct_stats_json(&all_vardct_anns))
+        } else {
+            None
+        };
+
         let info = serde_json::json!({
             "file": input.to_string_lossy(),
             "size_bytes": data.len(),
@@ -64,6 +94,8 @@ pub fn run_info(input: &Path, json_output: bool) -> Result<(), Box<dyn std::erro
                     })
                 }),
             },
+            "frames": frames_json,
+            "vardct_stats": vardct_stats,
         });
         println!("{}", serde_json::to_string_pretty(&info)?);
     } else {
@@ -198,4 +230,56 @@ fn print_vardct_stats(annotations: &[jxl_bitstream::annotate::HfMetadataAnnotati
         let hf_mul_avg = hf_mul_sum as f64 / total_blocks as f64;
         println!("  HF multiplier: min={}, max={}, avg={:.1}", hf_mul_min, hf_mul_max, hf_mul_avg);
     }
+}
+
+/// Compute VarDCT statistics as JSON.
+fn compute_vardct_stats_json(
+    annotations: &[jxl_bitstream::annotate::HfMetadataAnnotation],
+) -> serde_json::Value {
+    let mut total_blocks = 0u32;
+    let mut dct_type_counts: HashMap<String, u32> = HashMap::new();
+    let mut hf_mul_sum = 0i64;
+    let mut hf_mul_min = i32::MAX;
+    let mut hf_mul_max = i32::MIN;
+
+    for ann in annotations {
+        total_blocks += ann.num_varblocks;
+        for block in &ann.varblocks {
+            *dct_type_counts.entry(block.dct_select.clone()).or_default() += 1;
+            hf_mul_sum += block.hf_mul as i64;
+            hf_mul_min = hf_mul_min.min(block.hf_mul);
+            hf_mul_max = hf_mul_max.max(block.hf_mul);
+        }
+    }
+
+    // Sort DCT types by count
+    let mut dct_types: Vec<_> = dct_type_counts.into_iter().collect();
+    dct_types.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let dct_distribution: Vec<_> = dct_types
+        .iter()
+        .map(|(dct_type, count)| {
+            serde_json::json!({
+                "type": dct_type,
+                "count": count,
+                "percentage": (*count as f64 / total_blocks as f64) * 100.0,
+            })
+        })
+        .collect();
+
+    let hf_mul_avg = if total_blocks > 0 {
+        hf_mul_sum as f64 / total_blocks as f64
+    } else {
+        0.0
+    };
+
+    serde_json::json!({
+        "total_varblocks": total_blocks,
+        "dct_distribution": dct_distribution,
+        "hf_multiplier": {
+            "min": if total_blocks > 0 { hf_mul_min } else { 0 },
+            "max": if total_blocks > 0 { hf_mul_max } else { 0 },
+            "avg": hf_mul_avg,
+        },
+    })
 }
