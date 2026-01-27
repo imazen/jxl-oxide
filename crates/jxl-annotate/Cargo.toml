@@ -19,7 +19,7 @@ path = "src/main.rs"
 jxl-bitstream = { path = "../jxl-bitstream", features = ["annotate"] }
 jxl-oxide = { path = "../jxl-oxide" }
 jxl-image = { path = "../jxl-image" }
-jxl-frame = { path = "../jxl-frame" }
+jxl-frame = { path = "../jxl-frame", features = ["annotate"] }
 jxl-vardct = { path = "../jxl-vardct" }
 
 clap = { version = "4.5", features = ["derive"] }

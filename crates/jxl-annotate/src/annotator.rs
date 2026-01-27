@@ -1,7 +1,8 @@
 //! Core annotation logic for JXL bitstreams.
 
 use jxl_bitstream::annotate::{
-    Annotation, AnnotationManifest, Checkpoint, FrameInfo, ImageInfo, Segment, SegmentKind,
+    Annotation, AnnotationManifest, Checkpoint, FrameInfo, HfMetadataAnnotation, ImageInfo,
+    Segment, SegmentKind,
 };
 use jxl_frame::data::TocGroupKind;
 use jxl_oxide::JxlImage;
@@ -35,6 +36,8 @@ pub struct AnnotationResult {
     pub manifest: AnnotationManifest,
     pub segments: Vec<Segment>,
     pub checkpoints: Vec<Checkpoint>,
+    /// VarDCT block annotations per frame/LF group
+    pub vardct_annotations: Vec<HfMetadataAnnotation>,
 }
 
 /// Annotate a JXL file.
@@ -90,6 +93,17 @@ pub fn annotate_file(
     // Create segments with TOC data
     let segments = create_segments_with_toc(&image, options)?;
 
+    // Collect VarDCT annotations for all frames
+    let mut vardct_annotations = Vec::new();
+    for frame_idx in 0..image.num_loaded_frames() {
+        match get_vardct_annotations(&image, frame_idx) {
+            Ok(frame_anns) => vardct_annotations.extend(frame_anns),
+            Err(e) => {
+                tracing::warn!("Failed to get VarDCT annotations for frame {}: {}", frame_idx, e);
+            }
+        }
+    }
+
     // Create checkpoints if requested
     let checkpoints = if options.include_checkpoints {
         collect_checkpoints(&image, options)?
@@ -112,6 +126,7 @@ pub fn annotate_file(
         manifest,
         segments,
         checkpoints,
+        vardct_annotations,
     })
 }
 
@@ -450,29 +465,61 @@ fn collect_checkpoints(
     Ok(checkpoints)
 }
 
-/// Get VarDCT block info for a frame.
-#[allow(dead_code)]
-pub fn get_vardct_block_info(
+/// Get VarDCT block info for all LF groups in a frame.
+///
+/// Returns a vector of HfMetadataAnnotation, one per LF group.
+pub fn get_vardct_annotations(
     image: &JxlImage,
     frame_idx: usize,
 ) -> Result<
-    Vec<jxl_bitstream::annotate::VarBlockAnnotation>,
+    Vec<jxl_bitstream::annotate::HfMetadataAnnotation>,
     Box<dyn std::error::Error + Send + Sync + 'static>,
 > {
-    let blocks = Vec::new();
+    use jxl_frame::data::LfGlobal;
 
-    let Some(frame) = image.frame_by_keyframe(frame_idx) else {
-        return Ok(blocks);
+    let Some(frame) = image.frame(frame_idx) else {
+        return Ok(Vec::new());
     };
     let frame_header = frame.header();
 
     if frame_header.encoding != jxl_frame::header::Encoding::VarDct {
-        return Ok(blocks);
+        return Ok(Vec::new());
     }
 
-    // Access the HfMetadata for each LF group
-    // This requires accessing internal frame data which may not be exposed
-    // TODO: Add accessor methods to jxl-frame for annotation purposes
+    // Parse LfGlobal to get MaConfig and LfGlobalVarDct
+    let lf_global: LfGlobal<i32> = match frame.try_parse_lf_global::<i32>() {
+        Some(Ok(lg)) => lg,
+        Some(Err(e)) => return Err(e.into()),
+        None => return Ok(Vec::new()),
+    };
 
-    Ok(blocks)
+    let ma_config = lf_global.gmodular.ma_config();
+    let lf_global_vardct = lf_global.vardct.as_ref();
+
+    // Get annotations for each LF group
+    let mut annotations = Vec::new();
+    let num_lf_groups = frame_header.num_lf_groups();
+
+    for lf_group_idx in 0..num_lf_groups {
+        match frame.vardct_block_annotations(lf_global_vardct, ma_config, lf_group_idx) {
+            Some(Ok(mut ann)) => {
+                // Set the correct frame index
+                ann.frame_idx = frame_idx as u32;
+                annotations.push(ann);
+            }
+            Some(Err(e)) => {
+                tracing::warn!(
+                    "Failed to get VarDCT annotations for frame {} LF group {}: {}",
+                    frame_idx,
+                    lf_group_idx,
+                    e
+                );
+            }
+            None => {
+                // LF group not loaded or not VarDCT
+            }
+        }
+    }
+
+    Ok(annotations)
 }

@@ -648,3 +648,90 @@ impl Frame {
         }
     }
 }
+
+// Annotation support for VarDCT debugging
+#[cfg(feature = "annotate")]
+mod annotate_support {
+    use super::*;
+    use jxl_bitstream::annotate::{HfMetadataAnnotation, VarBlockAnnotation};
+    use jxl_vardct::BlockInfo;
+
+    impl Frame {
+        /// Extract VarDCT block annotations for an LF group.
+        ///
+        /// This parses the HfMetadata for the given LF group and returns detailed
+        /// information about each varblock including DCT transform type, size,
+        /// and quantization multiplier.
+        ///
+        /// Returns `None` if this is not a VarDCT frame or if the LF group
+        /// has not been loaded yet.
+        pub fn vardct_block_annotations(
+            &self,
+            lf_global_vardct: Option<&LfGlobalVarDct>,
+            global_ma_config: Option<&jxl_modular::MaConfig>,
+            lf_group_idx: u32,
+        ) -> Option<Result<HfMetadataAnnotation>> {
+            // Only VarDCT frames have HfMetadata
+            if self.header.encoding != header::Encoding::VarDct {
+                return None;
+            }
+
+            // Parse the LfGroup to get HfMetadata
+            // Use i32 as sample type (doesn't matter for HfMetadata extraction)
+            let lf_group: LfGroup<i32> = match self.try_parse_lf_group::<i32>(
+                lf_global_vardct,
+                global_ma_config,
+                None,
+                lf_group_idx,
+            )? {
+                Ok(lg) => lg,
+                Err(e) => return Some(Err(e)),
+            };
+
+            let hf_meta = lf_group.hf_meta?;
+            let block_info = &hf_meta.block_info;
+            let (width_blocks, height_blocks) = (block_info.width(), block_info.height());
+
+            let mut varblocks = Vec::new();
+
+            // Iterate over blocks, finding Data blocks (top-left of varblocks)
+            for y in 0..height_blocks {
+                for x in 0..width_blocks {
+                    if let BlockInfo::Data { dct_select, hf_mul } = block_info.get(x, y) {
+                        let (dw, dh) = dct_select.dct_select_size();
+
+                        // Get CfL values if available (at 64x64 grid granularity)
+                        let cfl_x = x / 8;
+                        let cfl_y = y / 8;
+                        let x_from_y = hf_meta.x_from_y.try_get_ref(cfl_x, cfl_y).copied();
+                        let b_from_y = hf_meta.b_from_y.try_get_ref(cfl_x, cfl_y).copied();
+
+                        // Get EPF sigma if available
+                        let epf_sigma = hf_meta.epf_sigma.try_get_ref(x, y).copied();
+
+                        varblocks.push(VarBlockAnnotation {
+                            block_x: x as u32,
+                            block_y: y as u32,
+                            dct_select: format!("{:?}", dct_select),
+                            size_blocks: (dw, dh),
+                            size_pixels: (dw * 8, dh * 8),
+                            hf_mul,
+                            x_from_y,
+                            b_from_y,
+                            epf_sigma,
+                        });
+                    }
+                }
+            }
+
+            Some(Ok(HfMetadataAnnotation {
+                frame_idx: 0, // Caller should set this
+                lf_group_idx,
+                width_blocks: width_blocks as u32,
+                height_blocks: height_blocks as u32,
+                num_varblocks: varblocks.len() as u32,
+                varblocks,
+            }))
+        }
+    }
+}

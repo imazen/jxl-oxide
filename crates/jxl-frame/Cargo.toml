@@ -45,3 +45,7 @@ path = "../jxl-threadpool"
 [dependencies.jxl-vardct]
 version = "0.11.0"
 path = "../jxl-vardct"
+
+[features]
+default = []
+annotate = ["jxl-bitstream/annotate"]

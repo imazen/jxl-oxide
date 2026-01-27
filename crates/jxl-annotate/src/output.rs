@@ -49,6 +49,19 @@ pub fn write_annotations(
         fs::write(output_dir.join("checkpoints.json"), checkpoints_json)?;
     }
 
+    // Write VarDCT annotations if present
+    for ann in &result.vardct_annotations {
+        let path = output_dir.join(format!(
+            "segments/frame_{}/lf_group_{}/vardct_blocks.json",
+            ann.frame_idx, ann.lf_group_idx
+        ));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(ann)?;
+        fs::write(&path, json)?;
+    }
+
     Ok(())
 }
 
