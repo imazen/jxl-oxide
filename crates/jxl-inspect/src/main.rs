@@ -1,10 +1,12 @@
-//! JXL Annotate - Bitstream annotation and analysis tool for JPEG XL files.
+//! JXL Inspect - Bitstream inspection and analysis tool for JPEG XL files.
 //!
 //! This tool provides:
-//! - Byte-level annotation of JXL bitstreams
-//! - Semantic segmentation by algorithm type (VarDCT, Modular)
-//! - Comparison of two JXL files
-//! - Export of decoded checkpoint values for pipeline analysis
+//! - Detailed file information with VarDCT statistics
+//! - Semantic comparison of two JXL files
+//! - ASCII visualizations of DCT block types and quantization
+//! - Section size breakdown analysis
+//! - CSV export for data analysis
+//! - Byte-level hex diff comparison
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -15,8 +17,8 @@ mod diff;
 mod output;
 
 #[derive(Parser)]
-#[command(name = "jxl-annotate")]
-#[command(about = "JXL bitstream annotation and analysis tool")]
+#[command(name = "jxl-inspect")]
+#[command(about = "JXL bitstream inspection and analysis tool for JPEG XL debugging")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]

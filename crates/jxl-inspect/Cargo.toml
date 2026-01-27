@@ -1,18 +1,18 @@
 [package]
-name = "jxl-annotate"
-description = "JXL bitstream annotation and analysis tool"
-authors = ["Wonwoo Choi <chwo9843@gmail.com>"]
-repository = "https://github.com/tirr-c/jxl-oxide.git"
+name = "jxl-inspect"
+description = "JXL bitstream inspection and analysis tool for JPEG XL debugging"
+authors = ["Lilith River <lilith@imazen.io>"]
+repository = "https://github.com/imazen/jxl-inspect"
 readme = "README.md"
-keywords = ["jpeg-xl", "decoder", "jxl-oxide", "debugging"]
-categories = ["multimedia::images", "development-tools"]
+keywords = ["jpeg-xl", "jxl", "debugging", "analysis", "inspection"]
+categories = ["multimedia::images", "development-tools", "command-line-utilities"]
 license = "MIT OR Apache-2.0"
 
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "jxl-annotate"
+name = "jxl-inspect"
 path = "src/main.rs"
 
 [dependencies]
