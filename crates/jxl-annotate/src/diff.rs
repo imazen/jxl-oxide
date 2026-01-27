@@ -23,6 +23,9 @@ pub struct DiffResult {
     pub file_b: String,
     pub summary: DiffSummary,
     pub segment_diffs: Vec<SegmentDiff>,
+    /// Overall VarDCT distribution comparison
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vardct_summary: Option<VarDctOverallSummary>,
     pub vardct_diffs: Vec<VarDctLfGroupDiff>,
     pub checkpoint_diffs: Vec<CheckpointDiff>,
 }
@@ -37,6 +40,48 @@ pub struct DiffSummary {
     pub different_segments: usize,
     pub missing_in_a: usize,
     pub missing_in_b: usize,
+    /// Total bytes in file A
+    pub total_bytes_a: u64,
+    /// Total bytes in file B
+    pub total_bytes_b: u64,
+}
+
+/// DCT type distribution comparison.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DctDistributionComparison {
+    /// DCT type name
+    pub dct_type: String,
+    /// Count in file A
+    pub count_a: u32,
+    /// Count in file B
+    pub count_b: u32,
+    /// Percentage in file A
+    pub pct_a: f64,
+    /// Percentage in file B
+    pub pct_b: f64,
+    /// Difference (pct_a - pct_b)
+    pub pct_diff: f64,
+}
+
+/// VarDCT overall summary comparing distributions.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VarDctOverallSummary {
+    pub total_blocks_a: u32,
+    pub total_blocks_b: u32,
+    /// DCT type distribution comparison
+    pub dct_distribution: Vec<DctDistributionComparison>,
+    /// HF multiplier stats for file A
+    pub hf_mul_stats_a: HfMulStats,
+    /// HF multiplier stats for file B
+    pub hf_mul_stats_b: HfMulStats,
+}
+
+/// HF multiplier statistics.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HfMulStats {
+    pub min: i32,
+    pub max: i32,
+    pub avg: f64,
 }
 
 /// Difference in a segment.
@@ -44,6 +89,12 @@ pub struct DiffSummary {
 pub struct SegmentDiff {
     pub segment_kind: String,
     pub status: SegmentDiffStatus,
+    /// Byte size in file A (if present)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_a: Option<u64>,
+    /// Byte size in file B (if present)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_b: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
 }
@@ -146,12 +197,39 @@ pub fn run_diff(
     // Print summary
     println!("Diff Summary:");
     println!("  Identical: {}", diff.summary.identical);
+    println!("  File A: {} bytes", diff.summary.total_bytes_a);
+    println!("  File B: {} bytes", diff.summary.total_bytes_b);
     println!("  Matching segments: {}", diff.summary.matching_segments);
     println!("  Different segments: {}", diff.summary.different_segments);
     println!("  Missing in A: {}", diff.summary.missing_in_a);
     println!("  Missing in B: {}", diff.summary.missing_in_b);
 
-    // VarDCT summary
+    // VarDCT overall summary
+    if let Some(ref vardct_sum) = diff.vardct_summary {
+        println!();
+        println!("VarDCT Distribution:");
+        println!("  Blocks A: {}  |  Blocks B: {}", vardct_sum.total_blocks_a, vardct_sum.total_blocks_b);
+        println!("  DCT Type           A%      B%    Diff");
+        for dct in vardct_sum.dct_distribution.iter().take(8) {
+            println!(
+                "    {:15} {:5.1}%  {:5.1}%  {:+5.1}%",
+                dct.dct_type, dct.pct_a, dct.pct_b, dct.pct_diff
+            );
+        }
+        if vardct_sum.dct_distribution.len() > 8 {
+            println!("    ... and {} more types", vardct_sum.dct_distribution.len() - 8);
+        }
+        println!(
+            "  HF mul A: min={}, max={}, avg={:.1}",
+            vardct_sum.hf_mul_stats_a.min, vardct_sum.hf_mul_stats_a.max, vardct_sum.hf_mul_stats_a.avg
+        );
+        println!(
+            "  HF mul B: min={}, max={}, avg={:.1}",
+            vardct_sum.hf_mul_stats_b.min, vardct_sum.hf_mul_stats_b.max, vardct_sum.hf_mul_stats_b.avg
+        );
+    }
+
+    // VarDCT per-block differences
     if !diff.vardct_diffs.is_empty() {
         let total_dct_diffs: u32 = diff
             .vardct_diffs
@@ -169,11 +247,13 @@ pub fn run_diff(
             .map(|d| d.summary.hf_mul_differences)
             .sum();
 
-        println!();
-        println!("VarDCT Block Differences:");
-        println!("  DCT type differences: {}", total_dct_diffs);
-        println!("  Size differences: {}", total_size_diffs);
-        println!("  HF multiplier differences: {}", total_hf_mul_diffs);
+        if total_dct_diffs > 0 || total_size_diffs > 0 || total_hf_mul_diffs > 0 {
+            println!();
+            println!("VarDCT Block Differences:");
+            println!("  DCT type differences: {}", total_dct_diffs);
+            println!("  Size differences: {}", total_size_diffs);
+            println!("  HF multiplier differences: {}", total_hf_mul_diffs);
+        }
     }
 
     println!();
@@ -220,23 +300,37 @@ fn compare_annotations(
         ))
         .collect();
 
-    // Simple comparison: check if segment kinds match
+    // Compute total bytes for summary
+    let total_bytes_a: u64 = segments_a.iter().map(|s| s.byte_range.1 - s.byte_range.0).sum();
+    let total_bytes_b: u64 = segments_b.iter().map(|s| s.byte_range.1 - s.byte_range.0).sum();
+
+    // Compare segments by kind with size information
     for seg_a in &segments_a {
         let kind_str = format!("{:?}", seg_a.kind);
+        let size_a = seg_a.byte_range.1 - seg_a.byte_range.0;
         let matching_b = segments_b.iter().find(|s| format!("{:?}", s.kind) == kind_str);
 
-        if let Some(_seg_b) = matching_b {
-            // TODO: Compare segment contents
+        if let Some(seg_b) = matching_b {
+            let size_b = seg_b.byte_range.1 - seg_b.byte_range.0;
+            let size_matches = size_a == size_b;
             segment_diffs.push(SegmentDiff {
                 segment_kind: kind_str,
-                status: SegmentDiffStatus::Identical, // Simplified
-                details: None,
+                status: if size_matches { SegmentDiffStatus::Identical } else { SegmentDiffStatus::Different },
+                size_a: Some(size_a),
+                size_b: Some(size_b),
+                details: if !size_matches {
+                    Some(format!("Size differs: {} vs {} bytes", size_a, size_b))
+                } else {
+                    None
+                },
             });
             matching += 1;
         } else {
             segment_diffs.push(SegmentDiff {
                 segment_kind: kind_str,
                 status: SegmentDiffStatus::OnlyInA,
+                size_a: Some(size_a),
+                size_b: None,
                 details: None,
             });
         }
@@ -249,9 +343,12 @@ fn compare_annotations(
         let matching_a = segments_a.iter().find(|s| format!("{:?}", s.kind) == kind_str);
 
         if matching_a.is_none() {
+            let size_b = seg_b.byte_range.1 - seg_b.byte_range.0;
             segment_diffs.push(SegmentDiff {
                 segment_kind: kind_str,
                 status: SegmentDiffStatus::OnlyInB,
+                size_a: None,
+                size_b: Some(size_b),
                 details: None,
             });
             missing_in_a += 1;
@@ -260,6 +357,12 @@ fn compare_annotations(
 
     // Compare VarDCT block annotations
     let vardct_diffs = compare_vardct_annotations(
+        &result_a.vardct_annotations,
+        &result_b.vardct_annotations,
+    );
+
+    // Compute overall VarDCT summary
+    let vardct_summary = compute_vardct_overall_summary(
         &result_a.vardct_annotations,
         &result_b.vardct_annotations,
     );
@@ -291,6 +394,8 @@ fn compare_annotations(
         different_segments: different,
         missing_in_a,
         missing_in_b: segments_a.len().saturating_sub(matching),
+        total_bytes_a,
+        total_bytes_b,
     };
 
     Ok(DiffResult {
@@ -298,6 +403,7 @@ fn compare_annotations(
         file_b: result_b.manifest.source_file.to_string_lossy().to_string(),
         summary,
         segment_diffs,
+        vardct_summary,
         vardct_diffs,
         checkpoint_diffs,
     })
@@ -377,6 +483,121 @@ fn compare_vardct_annotations(
     }
 
     diffs
+}
+
+/// Compute overall VarDCT distribution comparison.
+fn compute_vardct_overall_summary(
+    annotations_a: &[HfMetadataAnnotation],
+    annotations_b: &[HfMetadataAnnotation],
+) -> Option<VarDctOverallSummary> {
+    if annotations_a.is_empty() && annotations_b.is_empty() {
+        return None;
+    }
+
+    // Aggregate DCT type counts and HF mul stats for A
+    let mut dct_counts_a: HashMap<String, u32> = HashMap::new();
+    let mut total_blocks_a = 0u32;
+    let mut hf_mul_sum_a = 0i64;
+    let mut hf_mul_min_a = i32::MAX;
+    let mut hf_mul_max_a = i32::MIN;
+
+    for ann in annotations_a {
+        total_blocks_a += ann.num_varblocks;
+        for block in &ann.varblocks {
+            *dct_counts_a.entry(block.dct_select.clone()).or_default() += 1;
+            hf_mul_sum_a += block.hf_mul as i64;
+            hf_mul_min_a = hf_mul_min_a.min(block.hf_mul);
+            hf_mul_max_a = hf_mul_max_a.max(block.hf_mul);
+        }
+    }
+
+    // Aggregate DCT type counts and HF mul stats for B
+    let mut dct_counts_b: HashMap<String, u32> = HashMap::new();
+    let mut total_blocks_b = 0u32;
+    let mut hf_mul_sum_b = 0i64;
+    let mut hf_mul_min_b = i32::MAX;
+    let mut hf_mul_max_b = i32::MIN;
+
+    for ann in annotations_b {
+        total_blocks_b += ann.num_varblocks;
+        for block in &ann.varblocks {
+            *dct_counts_b.entry(block.dct_select.clone()).or_default() += 1;
+            hf_mul_sum_b += block.hf_mul as i64;
+            hf_mul_min_b = hf_mul_min_b.min(block.hf_mul);
+            hf_mul_max_b = hf_mul_max_b.max(block.hf_mul);
+        }
+    }
+
+    // Build combined list of DCT types
+    let mut all_types: Vec<String> = dct_counts_a.keys().cloned().collect();
+    for key in dct_counts_b.keys() {
+        if !all_types.contains(key) {
+            all_types.push(key.clone());
+        }
+    }
+
+    // Sort by total count (A + B) descending
+    all_types.sort_by(|a, b| {
+        let count_a = dct_counts_a.get(a).unwrap_or(&0) + dct_counts_b.get(a).unwrap_or(&0);
+        let count_b = dct_counts_a.get(b).unwrap_or(&0) + dct_counts_b.get(b).unwrap_or(&0);
+        count_b.cmp(&count_a)
+    });
+
+    // Build distribution comparison
+    let dct_distribution: Vec<DctDistributionComparison> = all_types
+        .iter()
+        .map(|dct_type| {
+            let count_a = *dct_counts_a.get(dct_type).unwrap_or(&0);
+            let count_b = *dct_counts_b.get(dct_type).unwrap_or(&0);
+            let pct_a = if total_blocks_a > 0 {
+                (count_a as f64 / total_blocks_a as f64) * 100.0
+            } else {
+                0.0
+            };
+            let pct_b = if total_blocks_b > 0 {
+                (count_b as f64 / total_blocks_b as f64) * 100.0
+            } else {
+                0.0
+            };
+            DctDistributionComparison {
+                dct_type: dct_type.clone(),
+                count_a,
+                count_b,
+                pct_a,
+                pct_b,
+                pct_diff: pct_a - pct_b,
+            }
+        })
+        .collect();
+
+    // Compute HF mul stats
+    let hf_mul_stats_a = if total_blocks_a > 0 {
+        HfMulStats {
+            min: hf_mul_min_a,
+            max: hf_mul_max_a,
+            avg: hf_mul_sum_a as f64 / total_blocks_a as f64,
+        }
+    } else {
+        HfMulStats { min: 0, max: 0, avg: 0.0 }
+    };
+
+    let hf_mul_stats_b = if total_blocks_b > 0 {
+        HfMulStats {
+            min: hf_mul_min_b,
+            max: hf_mul_max_b,
+            avg: hf_mul_sum_b as f64 / total_blocks_b as f64,
+        }
+    } else {
+        HfMulStats { min: 0, max: 0, avg: 0.0 }
+    };
+
+    Some(VarDctOverallSummary {
+        total_blocks_a,
+        total_blocks_b,
+        dct_distribution,
+        hf_mul_stats_a,
+        hf_mul_stats_b,
+    })
 }
 
 /// Compare varblocks within an LF group.
