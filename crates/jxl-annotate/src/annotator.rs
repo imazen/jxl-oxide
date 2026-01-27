@@ -477,6 +477,47 @@ fn collect_checkpoints(
 /// Get VarDCT block info for all LF groups in a frame.
 ///
 /// Returns a vector of HfMetadataAnnotation, one per LF group.
+/// Quantization parameters for a VarDCT frame.
+#[derive(Debug, Clone)]
+pub struct QuantizationParams {
+    pub global_scale: u32,
+    pub quant_lf: u32,
+    /// Computed DC quantization step (1.0 / (global_scale * quant_lf / 4096))
+    pub dc_quant_step: f64,
+}
+
+/// Get quantization parameters for a VarDCT frame.
+pub fn get_quantization_params(
+    image: &JxlImage,
+    frame_idx: usize,
+) -> Option<QuantizationParams> {
+    use jxl_frame::data::LfGlobal;
+
+    let frame = image.frame(frame_idx)?;
+    let frame_header = frame.header();
+
+    if frame_header.encoding != jxl_frame::header::Encoding::VarDct {
+        return None;
+    }
+
+    // Parse LfGlobal to get quantizer
+    let lf_global: LfGlobal<i32> = frame.try_parse_lf_global::<i32>()?.ok()?;
+    let vardct = lf_global.vardct.as_ref()?;
+
+    let global_scale = vardct.quantizer.global_scale;
+    let quant_lf = vardct.quantizer.quant_lf;
+
+    // DC quant step: 1.0 / (global_scale * quant_lf / 4096)
+    // This is the quantization step for DC coefficients
+    let dc_quant_step = 4096.0 / (global_scale as f64 * quant_lf as f64);
+
+    Some(QuantizationParams {
+        global_scale,
+        quant_lf,
+        dc_quant_step,
+    })
+}
+
 pub fn get_vardct_annotations(
     image: &JxlImage,
     frame_idx: usize,

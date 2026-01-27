@@ -1,6 +1,6 @@
 //! Inspect command implementation.
 
-use crate::annotator::{annotate_file, get_vardct_annotations, AnnotateOptions};
+use crate::annotator::{annotate_file, get_quantization_params, get_vardct_annotations, AnnotateOptions};
 use crate::output;
 use jxl_oxide::JxlImage;
 use std::collections::HashMap;
@@ -151,6 +151,15 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
                         jxl_frame::filter::EdgePreservingFilter::Enabled(params) => params.iters,
                     };
                     frame_json["epf_iters"] = serde_json::json!(epf_iters);
+
+                    // Add quantization parameters
+                    if let Some(qparams) = get_quantization_params(&image, frame_idx) {
+                        frame_json["quantization"] = serde_json::json!({
+                            "global_scale": qparams.global_scale,
+                            "quant_lf": qparams.quant_lf,
+                            "dc_quant_step": qparams.dc_quant_step,
+                        });
+                    }
                 }
 
                 if let Some(stats) = frame_vardct_stats {
@@ -233,12 +242,24 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
             println!("  Loops: {}", anim.num_loops);
         }
 
-        // Get first frame info
-        if let Some(frame) = image.frame_by_keyframe(0) {
+        // Get first VarDCT frame info (or first frame if none)
+        let mut first_vardct_idx: Option<usize> = None;
+        for frame_idx in 0..image.num_loaded_frames() {
+            if let Some(frame) = image.frame(frame_idx) {
+                if frame.header().encoding == jxl_frame::header::Encoding::VarDct {
+                    first_vardct_idx = Some(frame_idx);
+                    break;
+                }
+            }
+        }
+
+        // Show first frame (preferring VarDCT if present)
+        let display_frame_idx = first_vardct_idx.unwrap_or(0);
+        if let Some(frame) = image.frame(display_frame_idx) {
             let frame_header = frame.header();
 
             println!();
-            println!("Frame 0:");
+            println!("Frame {}:", display_frame_idx);
             println!(
                 "  Encoding: {}",
                 if frame_header.encoding == jxl_frame::header::Encoding::VarDct {
@@ -260,6 +281,13 @@ pub fn run_info(input: &Path, json_output: bool, per_frame: bool, summary: bool)
                     jxl_frame::filter::EdgePreservingFilter::Enabled(params) => params.iters,
                 };
                 println!("  EPF iterations: {}", epf_iters);
+
+                // Show quantization parameters
+                if let Some(qparams) = get_quantization_params(&image, display_frame_idx) {
+                    println!("  Global scale: {}", qparams.global_scale);
+                    println!("  Quant LF: {}", qparams.quant_lf);
+                    println!("  DC quant step: {:.6}", qparams.dc_quant_step);
+                }
             }
         }
 
