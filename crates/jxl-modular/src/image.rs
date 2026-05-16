@@ -428,6 +428,7 @@ impl<'dest, S: Sample> TransformedModularSubimage<'dest, S> {
             &channels,
             global_ma_config,
             tracker,
+            None, // recursive sub-image: no per-section channel filter
         )?;
 
         let mut image = RecursiveModularImage {
@@ -456,6 +457,29 @@ impl<S: Sample> TransformedModularSubimage<'_, S> {
     fn decode_inner(&mut self, bitstream: &mut Bitstream, stream_index: u32) -> Result<()> {
         let span = tracing::span!(tracing::Level::TRACE, "decode channels", stream_index);
         let _guard = span.enter();
+
+        // Skip decoding entirely when there are no channels to decode, or every
+        // channel has a zero dimension. This matches the behaviour of libjxl's
+        // `ModularFrameDecoder::DecodeGroup` (see libjxl `lib/jxl/dec_modular.cc`,
+        // the `if (gi.channel.empty()) ... return true;` early-out) and jxl-rs
+        // `decode_modular_subbitstream` (`if is_empty { return Ok(()); }`).
+        //
+        // Without this early-out we attempt to read 32 bits of initial ANS
+        // state from the bitstream even though the encoder never wrote them,
+        // producing a spurious `UnexpectedEof`. This is a real-world hit when
+        // a multi-group modular sub-frame (e.g. a patches reference frame
+        // larger than `group_dim` on either axis) defers all of its channel
+        // data to PassGroup sections, leaving the global LfGlobal modular
+        // section without per-pixel symbols.
+        let nothing_to_decode = self.channel_info.is_empty()
+            || self
+                .channel_info
+                .iter()
+                .all(|info| info.width == 0 || info.height == 0);
+        if nothing_to_decode {
+            tracing::trace!("Empty modular subimage; skipping entropy decode");
+            return Ok(());
+        }
 
         let dist_multiplier = self
             .channel_info

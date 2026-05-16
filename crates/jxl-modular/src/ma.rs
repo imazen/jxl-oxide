@@ -39,6 +39,31 @@ impl MaConfig {
         let nodes = self.tree.0.flatten(channel, stream_idx, prev_channels);
         FlatMaTree::new(nodes)
     }
+
+    /// Construct an empty placeholder `MaConfig`.
+    ///
+    /// Returned by `read_and_validate_local_modular_header` when the encoder
+    /// skipped writing a local MA tree because no channels would be decoded
+    /// in this section (i.e. the `num_chans == 0` early-return in libjxl
+    /// `modular/encoding/encoding.cc:587`). The placeholder is never used to
+    /// drive an entropy decoder — `TransformedModularSubimage::decode_inner`
+    /// short-circuits before touching it. Returning a real value (rather
+    /// than e.g. wrapping `MaConfig` in `Option`) keeps every existing
+    /// caller's signature unchanged.
+    pub(crate) fn empty_placeholder() -> Self {
+        let leaf = MaTreeLeafClustered {
+            cluster: 0,
+            predictor: super::predictor::Predictor::Zero,
+            offset: 0,
+            multiplier: 1,
+        };
+        Self {
+            num_tree_nodes: 1,
+            tree_depth: 1,
+            tree: Arc::new((MaTreeNode::Leaf(leaf), None)),
+            decoder: Decoder::empty_placeholder(),
+        }
+    }
 }
 
 impl MaConfig {

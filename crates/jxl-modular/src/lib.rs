@@ -104,11 +104,22 @@ impl<S: Sample> Bundle<ModularParams<'_, '_>> for ModularData<S> {
 
     fn parse(bitstream: &mut Bitstream, params: ModularParams) -> Result<Self> {
         let channels = ModularChannels::from_params(&params);
+        // Apply libjxl's `max_chan_size` filter (`group_dim` here) so the local
+        // MA tree is only read when at least one non-meta channel is small enough
+        // to actually be decoded in this section. When `group_dim == 0` the
+        // global Modular has no per-section split (every channel is decoded
+        // here, matching `prepare_subimage`), so the filter is bypassed.
+        let max_chan_size = if params.group_dim > 0 {
+            Some(params.group_dim)
+        } else {
+            None
+        };
         let (header, ma_ctx) = read_and_validate_local_modular_header(
             bitstream,
             &channels,
             params.ma_config,
             params.tracker,
+            max_chan_size,
         )?;
         Ok(Self {
             image: image::ModularImageDestination::new(
@@ -204,6 +215,7 @@ fn read_and_validate_local_modular_header(
     channels: &ModularChannels,
     global_ma_config: Option<&MaConfig>,
     tracker: Option<&AllocTracker>,
+    max_chan_size: Option<u32>,
 ) -> Result<(ModularHeader, MaConfig)> {
     let mut header = ModularHeader::parse(bitstream, ())?;
     if header.nb_transforms > 512 {
@@ -225,10 +237,48 @@ fn read_and_validate_local_modular_header(
         return Err(jxl_bitstream::Error::ProfileConformance("nb_channels_tr too large").into());
     }
 
+    // Match libjxl `modular/encoding/encoding.cc:573-587`: walk channels until
+    // a non-meta channel exceeds `max_chan_size`, then count the non-empty
+    // channels in the prefix. If zero channels would be decoded in this section
+    // (e.g. a multi-group sub-frame whose data lives entirely in PassGroups
+    // and whose global modular section therefore carries only the GroupHeader),
+    // the encoder writes neither a local MA tree nor a histogram — so trying
+    // to parse one yields a spurious `UnexpectedEof`. This was observed on
+    // images encoded by jxl-encoder (imazen/jxl-encoder) with a multi-group
+    // patches reference frame or a multi-group VarDCT alpha extra channel.
+    let nb_meta = tr_channels.nb_meta_channels as usize;
+    let mut decodable_channels = 0usize;
+    if let Some(max_chan_size) = max_chan_size {
+        for (i, ch) in tr_channels.info.iter().enumerate() {
+            if i >= nb_meta && (ch.width > max_chan_size || ch.height > max_chan_size) {
+                break;
+            }
+            if ch.width != 0 && ch.height != 0 {
+                decodable_channels += 1;
+            }
+        }
+    } else {
+        // No max_chan_size filter: every non-empty channel will be decoded here
+        // (matches `prepare_subimage` callers like `Modular::parse` from
+        // `dequant.rs` / `hf_metadata.rs` and the `recursive` path).
+        for ch in &tr_channels.info {
+            if ch.width != 0 && ch.height != 0 {
+                decodable_channels += 1;
+            }
+        }
+    }
+
     let ma_ctx = if header.use_global_tree {
         global_ma_config
             .ok_or(crate::Error::GlobalMaTreeNotAvailable)?
             .clone()
+    } else if decodable_channels == 0 {
+        // No channels will be decoded in this section, so the encoder did not
+        // write a local MA tree. Skip the parse and use a placeholder; the
+        // matching skip in `TransformedModularSubimage::decode_inner` ensures
+        // this placeholder is never used to drive an entropy decoder.
+        tracing::trace!("Skipping empty local MA tree (no decodable channels)");
+        MaConfig::empty_placeholder()
     } else {
         let local_samples = tr_channels
             .info

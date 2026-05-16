@@ -16,3 +16,5 @@ mod image;
 mod jbrd;
 
 mod fuzz_findings;
+
+mod encoder_regression;

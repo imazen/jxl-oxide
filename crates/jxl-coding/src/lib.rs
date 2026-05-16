@@ -53,6 +53,32 @@ impl Decoder {
         })
     }
 
+    /// Construct an empty placeholder decoder.
+    ///
+    /// The returned decoder has no clusters, no histograms and Lz77 disabled.
+    /// It is **not** safe to call [`Self::read_varint`] / [`Self::begin`] /
+    /// [`Self::finalize`] on this value — every entry point indexes into
+    /// `clusters` or `configs`, which are empty. This exists only as a
+    /// placeholder for the `MaConfig` returned by
+    /// `read_and_validate_local_modular_header` when the encoder skipped
+    /// writing a local MA tree because the matching decode section is empty.
+    /// Callers must guarantee they never drive this decoder.
+    #[doc(hidden)]
+    pub fn empty_placeholder() -> Self {
+        Self {
+            lz77: Lz77::Disabled,
+            inner: DecoderInner {
+                clusters: Vec::new(),
+                configs: Vec::new(),
+                code: Coder::Ans {
+                    dist: Arc::new(Vec::new()),
+                    state: 0,
+                    initial: true,
+                },
+            },
+        }
+    }
+
     /// Read an integer from the bitstream with the given context.
     #[inline]
     pub fn read_varint(&mut self, bitstream: &mut Bitstream, ctx: u32) -> CodingResult<u32> {
