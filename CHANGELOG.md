@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.6] - 2026-05-29
+
+The Imazen fork merges this release while retaining empty local modular-section
+support (`fd4e2c3e`). The fixes below come from the upstream release
+(`f8ae722e`). The fork's `just compatibility-check` uses CI's Rust 1.95.0:
+grid/framebuffer unit tests and all 62 bundled decoder regressions pass locally,
+including the multigroup VarDCT alpha case. Dedicated CI also runs these
+regressions on i686, Windows ARM64, and macOS ARM64.
+
+### Fixed
+- `jxl-grid`: Fix multiple integer overflows in jxl-grid (GHSA-5pmv-rx8r-wmv5).
+- `jxl-modular`: Fix integer overflow while decoding Modular image with MA table node
+  (GHSA-2v8p-fqpx-2q3w).
+- `jxl-oxide`: Fix a soundness issue in jxl-oxide framebuffer (GHSA-66m8-c62j-h6v5).
+- `jxl-grid`: Prevent downstream crates from implementing `SimdVector` (#494).
+- `jxl-render`: Fix `f32::clamp` panic with `NaN`'s in upsampling (#485).
+
 ## [0.12.5] - 2025-09-30
 
 ### Added
@@ -243,6 +260,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This is the first official release of jxl-oxide, a JPEG XL decoder written in Rust.
 - Frequently used features are mostly implemented.
 
+[0.12.6]: https://github.com/tirr-c/jxl-oxide/releases/tag/0.12.6
 [0.12.5]: https://github.com/tirr-c/jxl-oxide/releases/tag/0.12.5
 [0.12.4]: https://github.com/tirr-c/jxl-oxide/releases/tag/0.12.4
 [0.12.3]: https://github.com/tirr-c/jxl-oxide/releases/tag/0.12.3

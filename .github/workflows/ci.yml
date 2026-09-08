@@ -10,6 +10,39 @@ on:
 name: Continuous integration
 
 jobs:
+  compatibility:
+    name: Decoder regressions (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: i686-unknown-linux-gnu, cargo: cross }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, cargo: cargo }
+          - { os: macos-latest, target: aarch64-apple-darwin, cargo: cargo }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.95.0'
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.cargo == 'cross'
+        uses: taiki-e/cache-cargo-install-action@v3
+        with:
+          tool: cross
+          git: https://github.com/cross-rs/cross
+          rev: 4e64366af6095c84fa4f54a0fa5a2ba7d9a271aa
+      - name: Run grid, modular and framebuffer tests
+        shell: bash
+        run: ${{ matrix.cargo }} test --locked --target ${{ matrix.target }} -p jxl-grid -p jxl-modular -p jxl-oxide --lib
+      - name: Decode empty modular sections
+        shell: bash
+        run: ${{ matrix.cargo }} test --locked --target ${{ matrix.target }} -p jxl-oxide-tests --no-default-features --test test encoder_regression
+      - name: Decode fuzz regression inputs
+        shell: bash
+        run: ${{ matrix.cargo }} test --locked --target ${{ matrix.target }} -p jxl-oxide-tests --no-default-features --test test fuzz_findings
+
   test:
     name: Test Suite
     strategy:
@@ -35,15 +68,15 @@ jobs:
         run: |
           sudo dpkg --add-architecture armhf
           sudo apt update && sudo apt install -y crossbuild-essential-armhf libc6:armhf
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: 'true'
       - uses: dtolnay/rust-toolchain@master
         id: toolchain
         with:
-          toolchain: '1.91.1'
+          toolchain: '1.95.0'
           targets: ${{ matrix.target }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -53,7 +86,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-dot-cargo-${{ steps.toolchain.outputs.cacheKey }}-
             ${{ runner.os }}-dot-cargo-
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ./crates/jxl-oxide-tests/tests/cache/
@@ -64,7 +97,7 @@ jobs:
         run: cargo test --release --target ${{ matrix.target }} -- --test-threads 1
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: 'arm-linux-gnueabihf-gcc'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: images
@@ -74,13 +107,13 @@ jobs:
     name: Rustfmt and Clippy
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         id: toolchain
         with:
-          toolchain: '1.89.0'
+          toolchain: '1.95.0'
           components: clippy, rustfmt
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
