@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+
 use super::box_header::*;
-use super::{BitstreamKind, ContainerParser, DetectState, JxlpIndexState};
+use super::{BitstreamKind, ContainerParser, DetectState, JxlpIndexState, OooJxlpPayload};
 use crate::consts;
 use crate::error::{BitstreamResult, Error};
 
@@ -23,9 +25,28 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
     fn emit_single(&mut self) -> BitstreamResult<Option<ParseEvent<'buf>>> {
         let state = &mut self.inner.state;
         let jxlp_index_state = &mut self.inner.jxlp_index_state;
+        let file_format_version = &mut self.inner.file_format_version;
+        let ftyp_header = &mut self.inner.ftyp_header;
+        let ftyp_header_len = &mut self.inner.ftyp_header_len;
+        let jxlp_ooo_buffer = &mut self.inner.jxlp_ooo_buffer;
         let buf = &mut self.remaining_input;
 
         loop {
+            // Out-of-order jxlp payloads buffered while their predecessors were
+            // missing become emit-able once the missing pieces have arrived.
+            // Injection only happens at box boundaries: the in-order piece that
+            // advanced the index must emit its payload first.
+            if matches!(*state, DetectState::WaitingBoxHeader)
+                && let JxlpIndexState::Jxlp(expected_index) = jxlp_index_state
+                && let Some(payload) = jxlp_ooo_buffer.remove(expected_index)
+            {
+                *expected_index += 1;
+                if payload.is_last {
+                    *jxlp_index_state = JxlpIndexState::JxlpFinished;
+                }
+                return Ok(Some(ParseEvent::Codestream(Cow::Owned(payload.data))));
+            }
+
             if buf.is_empty() {
                 self.finished = true;
                 return Ok(None);
@@ -102,9 +123,7 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                                 JxlpIndexState::Initial => {
                                     *jxlp_index_state = JxlpIndexState::Jxlp(0);
                                 }
-                                JxlpIndexState::Jxlp(index) => {
-                                    *index += 1;
-                                }
+                                JxlpIndexState::Jxlp(_) => {}
                                 JxlpIndexState::SingleJxlc => {
                                     tracing::debug!("jxlp box found after jxlc box");
                                     return Err(Error::InvalidBox);
@@ -159,31 +178,78 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                     let is_last = index & 0x80000000 != 0;
                     let index = index & 0x7fffffff;
 
-                    match *jxlp_index_state {
-                        JxlpIndexState::Jxlp(expected_index) if expected_index == index => {
-                            if is_last {
-                                *jxlp_index_state = JxlpIndexState::JxlpFinished;
-                            }
-                        }
-                        JxlpIndexState::Jxlp(expected_index) => {
-                            tracing::debug!(
-                                expected_index,
-                                actual_index = index,
-                                "Out-of-order jxlp box found",
-                            );
+                    let JxlpIndexState::Jxlp(expected_index) = *jxlp_index_state else {
+                        unreachable!("invalid jxlp index state in WaitingJxlpIndex");
+                    };
+                    let bytes_left = header.box_size().map(|x| x as usize - 4);
+
+                    if index == expected_index {
+                        *jxlp_index_state = if is_last {
+                            JxlpIndexState::JxlpFinished
+                        } else {
+                            JxlpIndexState::Jxlp(expected_index + 1)
+                        };
+                        *state = DetectState::InCodestream {
+                            kind: BitstreamKind::Container,
+                            bytes_left,
+                            pending_no_more_aux_box: bytes_left.is_none(),
+                        };
+                    } else if index < expected_index {
+                        tracing::debug!(index, "Duplicate jxlp box found");
+                        return Err(Error::InvalidBox);
+                    } else if *file_format_version >= 1 {
+                        // ftyp minor version 1 permits out-of-order jxlp
+                        // boxes; buffer the payload until the boxes before it
+                        // have been seen (same as libjxl).
+                        if jxlp_ooo_buffer.contains_key(&index) {
+                            tracing::debug!(index, "Duplicate jxlp box index found");
                             return Err(Error::InvalidBox);
                         }
-                        state => {
-                            unreachable!("invalid jxlp index state in WaitingJxlpIndex: {state:?}");
+                        *state = DetectState::BufferingJxlp {
+                            index,
+                            is_last,
+                            bytes_left,
+                            payload: Vec::new(),
+                        };
+                    } else {
+                        tracing::debug!(
+                            expected_index,
+                            actual_index = index,
+                            "Out-of-order jxlp box found",
+                        );
+                        return Err(Error::InvalidBox);
+                    }
+                }
+
+                DetectState::BufferingJxlp {
+                    bytes_left,
+                    payload,
+                    ..
+                } => {
+                    let take = bytes_left.map_or(buf.len(), |n| n.min(buf.len()));
+                    payload.extend_from_slice(&buf[..take]);
+                    *buf = &buf[take..];
+                    if let Some(n) = bytes_left {
+                        *n -= take;
+                        if *n == 0 {
+                            let DetectState::BufferingJxlp {
+                                index,
+                                is_last,
+                                payload,
+                                ..
+                            } = std::mem::replace(state, DetectState::WaitingBoxHeader)
+                            else {
+                                unreachable!()
+                            };
+                            jxlp_ooo_buffer.insert(
+                                index,
+                                OooJxlpPayload {
+                                    data: payload,
+                                    is_last,
+                                },
+                            );
                         }
                     }
-
-                    let bytes_left = header.box_size().map(|x| x as usize - 4);
-                    *state = DetectState::InCodestream {
-                        kind: BitstreamKind::Container,
-                        bytes_left,
-                        pending_no_more_aux_box: bytes_left.is_none(),
-                    };
                 }
 
                 // JXL codestream box is the last box; emit "no more aux box" event.
@@ -200,7 +266,7 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                 } => {
                     let payload = *buf;
                     *buf = &[];
-                    return Ok(Some(ParseEvent::Codestream(payload)));
+                    return Ok(Some(ParseEvent::Codestream(Cow::Borrowed(payload))));
                 }
                 DetectState::InCodestream {
                     bytes_left: Some(bytes_left),
@@ -217,7 +283,7 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                         *buf = &[];
                         payload
                     };
-                    return Ok(Some(ParseEvent::Codestream(payload)));
+                    return Ok(Some(ParseEvent::Codestream(Cow::Borrowed(payload))));
                 }
 
                 // Read brob payload box type.
@@ -261,19 +327,24 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                 }
 
                 DetectState::InAuxBox {
-                    header: ContainerBoxHeader { ty, .. },
+                    header: ContainerBoxHeader { ty: outer_ty, .. },
                     brotli_box_type,
                     bytes_left,
                 } => {
+                    let outer_ty = *outer_ty;
                     let ty = if let Some(ty) = brotli_box_type {
                         *ty
                     } else {
-                        *ty
+                        outer_ty
                     };
 
                     let payload = match bytes_left {
                         Some(0) => {
                             *state = DetectState::WaitingBoxHeader;
+                            if outer_ty == ContainerBoxType::FILE_TYPE && *ftyp_header_len < 8 {
+                                tracing::debug!("ftyp box too small");
+                                return Err(Error::InvalidBox);
+                            }
                             return Ok(Some(ParseEvent::AuxBoxEnd(ty)));
                         }
                         Some(bytes_left) => {
@@ -289,6 +360,21 @@ impl<'inner, 'buf> ParseEvents<'inner, 'buf> {
                             payload
                         }
                     };
+
+                    if outer_ty == ContainerBoxType::FILE_TYPE && *ftyp_header_len < 8 {
+                        let take = (8 - *ftyp_header_len).min(payload.len());
+                        ftyp_header[*ftyp_header_len..*ftyp_header_len + take]
+                            .copy_from_slice(&payload[..take]);
+                        *ftyp_header_len += take;
+                        if *ftyp_header_len == 8 {
+                            let version = u32::from_be_bytes(ftyp_header[4..8].try_into().unwrap());
+                            if &ftyp_header[..4] != b"jxl " || version > 1 {
+                                tracing::debug!("Invalid ftyp box contents");
+                                return Err(Error::InvalidBox);
+                            }
+                            *file_format_version = version;
+                        }
+                    }
 
                     return Ok(Some(ParseEvent::AuxBoxData(ty, payload)));
                 }
@@ -337,8 +423,8 @@ pub enum ParseEvent<'buf> {
     /// Codestream data is read.
     ///
     /// Returned data may be partial. Complete codestream can be obtained by concatenating all data
-    /// of `Codestream` events.
-    Codestream(&'buf [u8]),
+    /// of `Codestream` events. Buffered out-of-order `jxlp` payloads are owned.
+    Codestream(Cow<'buf, [u8]>),
     /// No more auxiliary box will come after this event.
     NoMoreAuxBox,
     /// New auxiliary box starts.
@@ -384,6 +470,166 @@ impl std::fmt::Debug for ParseEvent<'_> {
                 .field(&format_args!("{} byte(s)", buf.len()))
                 .finish(),
             Self::AuxBoxEnd(ty) => f.debug_tuple("AuxBoxEnd").field(&ty).finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consts::CONTAINER_SIG;
+
+    fn bx(ty: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(ty);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn ftyp(version: u32) -> Vec<u8> {
+        let mut payload = b"jxl ".to_vec();
+        payload.extend_from_slice(&version.to_be_bytes());
+        payload.extend_from_slice(b"jxlc");
+        bx(b"ftyp", &payload)
+    }
+
+    fn jxlp(index: u32, is_last: bool, payload: &[u8]) -> Vec<u8> {
+        let tag = index | ((is_last as u32) << 31);
+        let mut inner = tag.to_be_bytes().to_vec();
+        inner.extend_from_slice(payload);
+        bx(b"jxlp", &inner)
+    }
+
+    fn container(version: u32, boxes: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = CONTAINER_SIG.to_vec();
+        v.extend_from_slice(&ftyp(version));
+        for b in boxes {
+            v.extend_from_slice(b);
+        }
+        v
+    }
+
+    fn collect_codestream(data: &[u8], chunk_size: usize) -> BitstreamResult<Vec<u8>> {
+        let mut parser = ContainerParser::new();
+        let mut out = Vec::new();
+        let mut pending = Vec::new();
+        for chunk in data.chunks(chunk_size.max(1)) {
+            pending.extend_from_slice(chunk);
+            for event in parser.feed_bytes(&pending) {
+                if let ParseEvent::Codestream(payload) = event? {
+                    out.extend_from_slice(&payload);
+                }
+            }
+            pending.drain(..parser.previous_consumed_bytes());
+        }
+        for event in parser.feed_bytes(&[]) {
+            if let ParseEvent::Codestream(payload) = event? {
+                out.extend_from_slice(&payload);
+            }
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn jxlp_in_order() {
+        for version in [0u32, 1] {
+            let data = container(
+                version,
+                &[
+                    jxlp(0, false, b"AAA"),
+                    jxlp(1, false, b"BBB"),
+                    jxlp(2, true, b"CCC"),
+                ],
+            );
+            assert_eq!(collect_codestream(&data, usize::MAX).unwrap(), b"AAABBBCCC");
+        }
+    }
+
+    #[test]
+    fn jxlp_out_of_order_minor_version_1() {
+        let data = container(
+            1,
+            &[
+                jxlp(0, false, b"AAA"),
+                jxlp(2, true, b"CCC"),
+                jxlp(1, false, b"BBB"),
+            ],
+        );
+        assert_eq!(collect_codestream(&data, usize::MAX).unwrap(), b"AAABBBCCC");
+    }
+
+    #[test]
+    fn jxlp_out_of_order_minor_version_0_rejected() {
+        let data = container(
+            0,
+            &[
+                jxlp(0, false, b"AAA"),
+                jxlp(2, true, b"CCC"),
+                jxlp(1, false, b"BBB"),
+            ],
+        );
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn jxlp_out_of_order_no_ftyp_rejected() {
+        let mut data = CONTAINER_SIG.to_vec();
+        data.extend_from_slice(&jxlp(1, true, b"BBB"));
+        data.extend_from_slice(&jxlp(0, false, b"AAA"));
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn jxlp_duplicate_index_rejected() {
+        // index 0 twice
+        let data = container(1, &[jxlp(0, false, b"AAA"), jxlp(0, false, b"aaa")]);
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+
+        // duplicated buffered index
+        let data = container(
+            1,
+            &[
+                jxlp(0, false, b"AAA"),
+                jxlp(2, false, b"CCC"),
+                jxlp(2, true, b"ccc"),
+            ],
+        );
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn jxlp_after_last_rejected() {
+        let data = container(1, &[jxlp(0, true, b"AAA"), jxlp(1, true, b"BBB")]);
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn ftyp_invalid_contents_rejected() {
+        // bad major brand
+        let mut data = CONTAINER_SIG.to_vec();
+        data.extend_from_slice(&bx(b"ftyp", b"exif\x00\x00\x00\x01jxlc"));
+        data.extend_from_slice(&jxlp(0, true, b"AAA"));
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+
+        // unsupported minor version
+        let mut data = CONTAINER_SIG.to_vec();
+        data.extend_from_slice(&ftyp(2));
+        data.extend_from_slice(&jxlp(0, true, b"AAA"));
+        assert!(collect_codestream(&data, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn jxlp_out_of_order_chunked() {
+        let data = container(
+            1,
+            &[
+                jxlp(0, false, b"AAA"),
+                jxlp(2, true, b"CCC"),
+                jxlp(1, false, b"BBB"),
+            ],
+        );
+        for chunk_size in [1usize, 3, 7] {
+            assert_eq!(collect_codestream(&data, chunk_size).unwrap(), b"AAABBBCCC");
         }
     }
 }

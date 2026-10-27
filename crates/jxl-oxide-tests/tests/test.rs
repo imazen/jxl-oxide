@@ -13,6 +13,8 @@ mod decode;
 #[cfg(feature = "image")]
 mod image;
 
+mod container;
+
 mod jbrd;
 
 mod fuzz_findings;

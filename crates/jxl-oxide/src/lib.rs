@@ -327,7 +327,7 @@ impl UninitializedJxlImage {
             match event? {
                 ParseEvent::BitstreamKind(_) => {}
                 ParseEvent::Codestream(buf) => {
-                    self.buffer.extend_from_slice(buf);
+                    self.buffer.extend_from_slice(&buf);
                 }
                 aux_box_event => {
                     self.aux_boxes.handle_event(aux_box_event)?;
@@ -494,7 +494,7 @@ impl JxlImage {
             match event? {
                 ParseEvent::BitstreamKind(_) => {}
                 ParseEvent::Codestream(buf) => {
-                    self.inner.feed_bytes_inner(&mut self.ctx, buf)?;
+                    self.inner.feed_bytes_inner(&mut self.ctx, &buf)?;
                 }
                 aux_box_event => {
                     self.inner.aux_boxes.handle_event(aux_box_event)?;

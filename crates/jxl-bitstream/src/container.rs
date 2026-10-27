@@ -11,7 +11,18 @@ pub use parse::*;
 pub struct ContainerParser {
     state: DetectState,
     jxlp_index_state: JxlpIndexState,
+    file_format_version: u32,
+    ftyp_header: [u8; 8],
+    ftyp_header_len: usize,
+    jxlp_ooo_buffer: std::collections::BTreeMap<u32, OooJxlpPayload>,
     previous_consumed_bytes: usize,
+}
+
+/// Payload of an out-of-order `jxlp` box, buffered until its index turns up.
+#[derive(Debug)]
+struct OooJxlpPayload {
+    data: Vec<u8>,
+    is_last: bool,
 }
 
 #[derive(Debug, Default)]
@@ -20,6 +31,14 @@ enum DetectState {
     WaitingSignature,
     WaitingBoxHeader,
     WaitingJxlpIndex(ContainerBoxHeader),
+    /// An out-of-order `jxlp` box (ftyp minor version 1) is being buffered
+    /// until the boxes before it have been seen.
+    BufferingJxlp {
+        index: u32,
+        is_last: bool,
+        bytes_left: Option<usize>,
+        payload: Vec<u8>,
+    },
     InAuxBox {
         header: ContainerBoxHeader,
         brotli_box_type: Option<ContainerBoxType>,
@@ -66,6 +85,7 @@ impl ContainerParser {
             DetectState::WaitingSignature => BitstreamKind::Unknown,
             DetectState::WaitingBoxHeader
             | DetectState::WaitingJxlpIndex(..)
+            | DetectState::BufferingJxlp { .. }
             | DetectState::InAuxBox { .. } => BitstreamKind::Container,
             DetectState::InCodestream { kind, .. } => kind,
         }
