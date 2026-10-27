@@ -444,7 +444,18 @@ impl JpegBitstreamReconstructor<'_, '_, '_> {
                         3 => 0b01_0010,
                         _ => 0b01_0001,
                     };
-                    let component_bytes = [comp.id, sampling_val, comp.q_idx];
+                    // `q_idx` is a position in `quant_tables`; the DQT table
+                    // identifier is stored in `QuantTable::index`.
+                    let Some(tq) = self
+                        .header
+                        .quant_tables
+                        .get(comp.q_idx as usize)
+                        .map(|qt| qt.index)
+                    else {
+                        tracing::error!(q_idx = comp.q_idx, "Invalid quant table index");
+                        return Err(Error::InvalidData);
+                    };
+                    let component_bytes = [comp.id, sampling_val, tq];
                     writer
                         .write_all(&component_bytes)
                         .map_err(Error::ReconstructionWrite)?;
@@ -619,6 +630,7 @@ impl JpegBitstreamReconstructor<'_, '_, '_> {
 
                 let last_idx = self.quant_ptr.iter().position(|qt| qt.is_last);
                 let num_tables = last_idx.expect("is_last not found") + 1;
+                let first_table_idx = self.header.quant_tables.len() - self.quant_ptr.len();
                 let (qts, remainder) = self.quant_ptr.split_at(num_tables);
                 self.quant_ptr = remainder;
 
@@ -630,14 +642,19 @@ impl JpegBitstreamReconstructor<'_, '_, '_> {
                     .write_all(&header)
                     .map_err(Error::ReconstructionWrite)?;
 
-                for qt in qts {
+                for (idx, qt) in qts.iter().enumerate() {
+                    // `q_idx` is a position in `quant_tables`, not the DQT
+                    // table identifier `qt.index`. When several components
+                    // share a table position the last one wins, like libjxl.
                     let channel = self
                         .header
                         .components
                         .iter()
-                        .position(|c| c.q_idx == qt.index);
+                        .rposition(|c| c.q_idx as usize == first_table_idx + idx);
                     let q = channel.and_then(|mut channel| {
-                        if do_ycbcr && channel <= 1 {
+                        if self.header.is_gray {
+                            channel = 1;
+                        } else if do_ycbcr && channel <= 1 {
                             channel ^= 1;
                         }
                         hf_global.dequant_matrices.jpeg_quant_values(channel)

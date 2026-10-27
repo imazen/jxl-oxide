@@ -25,6 +25,42 @@ macro_rules! test {
     };
 }
 
+// Regression test for DQT table matching: the jbrd records the DQT table
+// identifier (`QuantTable::index`) and the table position used by each
+// component (`Component::q_idx`) separately. Files whose table identifiers
+// are permuted relative to table order must still reconstruct exactly.
+#[test]
+fn dqt_permuted_identifiers() {
+    let input = include_bytes!("dqt_permuted.jxl");
+    let image = JxlImage::builder()
+        .read(std::io::Cursor::new(input))
+        .expect("Failed to read file");
+
+    let mut jpeg = Vec::new();
+    image
+        .reconstruct_jpeg(&mut jpeg)
+        .expect("failed to reconstruct JPEG data");
+
+    let expected = include_bytes!("dqt_permuted.jpg");
+    assert_eq!(&*jpeg, &expected[..]);
+}
+
+#[test]
+fn dqt_normal_identifiers() {
+    let input = include_bytes!("dqt_normal.jxl");
+    let image = JxlImage::builder()
+        .read(std::io::Cursor::new(input))
+        .expect("Failed to read file");
+
+    let mut jpeg = Vec::new();
+    image
+        .reconstruct_jpeg(&mut jpeg)
+        .expect("failed to reconstruct JPEG data");
+
+    let expected = include_bytes!("dqt_normal.jpg");
+    assert_eq!(&*jpeg, &expected[..]);
+}
+
 #[cfg(feature = "conformance")]
 test! {
     bench_oriented_brg(
